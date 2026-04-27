@@ -3,174 +3,175 @@ import random
 import asyncio
 from dotenv import load_dotenv
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 load_dotenv()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="/", intents=intents)
+bot = commands.Bot(command_prefix="", intents=intents)
 
-# 🎯 الرومات
 PROPERTY_ROOM = 1498037416672493829
 ADMIN_ROOM = 1498037576538259556
 
-# 🧠 قاعدة بيانات بسيطة (بديل quick.db)
+# 🎨 ألوان
+COLOR = 0x2b2d31
+SUCCESS = 0x57F287
+ERROR = 0xED4245
+GOLD = 0xFEE75C
+
+# 🧠 قاعدة بيانات
 db = {}
 
-def create_user(user_id):
-    if user_id not in db:
-        db[user_id] = {
-            "money": 1000,
-            "stocks": 3,
+# 🏁 حالة المزاد
+current_auction = {
+    "active": False,
+    "price": 0,
+    "highest": None,
+    "message": None
+}
+
+def create_user(uid):
+    if uid not in db:
+        db[uid] = {
+            "money": 10000,
             "properties": [],
-            "firstWin": True,
-            "lastCommand": 0,
             "banned": False
         }
 
-def cooldown(user):
-    now = int(asyncio.get_event_loop().time() * 1000)
-    if now - user["lastCommand"] < 3000:
-        return False
-    user["lastCommand"] = now
-    return True
+def em(title, desc="", color=COLOR):
+    return discord.Embed(title=title, description=desc, color=color)
 
+# ================= READY =================
 @bot.event
 async def on_ready():
-    print(f"✅ شغال: {bot.user}")
+    print(f"✅ {bot.user}")
+    auto_auction.start()
 
+# ================= شراء =================
 @bot.event
 async def on_message(msg):
     if msg.author.bot:
         return
 
-    user_id = msg.author.id
-    create_user(user_id)
-    user = db[user_id]
+    if msg.channel.id not in [PROPERTY_ROOM, ADMIN_ROOM]:
+        return
+
+    create_user(msg.author.id)
+    user = db[msg.author.id]
 
     if user["banned"]:
         return
 
-    if not cooldown(user):
-        return
+    content = msg.content.lower()
 
-    content = msg.content
-
-    # 📊 رصيد
-    if content == "/رصيدي":
-        await msg.reply(f"💰 رصيدك: {user['money']}")
-
-    # 📊 محفظتي
-    elif content == "/محفظتي":
-        embed = discord.Embed(title="📊 | حسابك")
-        embed.add_field(name="💰 الرصيد", value=str(user["money"]))
-        embed.add_field(name="🏠 العقارات", value=str(len(user["properties"])))
-        await msg.reply(embed=embed)
+    # 💰 رصيد
+    if content == "رصيدي":
+        await msg.reply(embed=em("💰 رصيدك", f"{user['money']}", GOLD))
 
     # 🏠 شراء
-    elif content == "/شراء":
-        if msg.channel.id != PROPERTY_ROOM:
-            return await msg.reply("❌ هذا الأمر فقط في روم العقارات")
+    elif content == "شراء":
+        await msg.reply(embed=em("🏠 شراء", "اكتب المبلغ اللي تبغاه"))
 
-        price = random.randint(500, 1000)
-
-        if user["money"] < price:
-            return await msg.reply("❌ فلوسك ما تكفي")
-
-        user["money"] -= price
-        user["properties"].append({
-            "id": int(asyncio.get_event_loop().time()),
-            "price": price
-        })
-
-        await msg.reply(f"✅ اشتريت عقار بـ {price}")
-
-        await asyncio.sleep(600)
-
-        if user["firstWin"]:
-            result = "ربح"
-            user["firstWin"] = False
-        else:
-            r = random.random()
-            if r < 0.4:
-                result = "ربح"
-            elif r < 0.8:
-                result = "خسارة"
-            else:
-                result = "ثبات"
-
-        if result == "ربح":
-            user["money"] += random.randint(0, 300)
-
-        if result == "خسارة" and random.random() < 0.3:
-            if user["properties"]:
-                user["properties"].pop()
+        def check(m):
+            return m.author == msg.author and m.channel == msg.channel
 
         try:
-            await msg.author.send(f"📩 نتيجة الاستثمار: {result}")
+            reply = await bot.wait_for("message", timeout=30, check=check)
+            amount = int(reply.content)
         except:
-            pass
+            return await msg.channel.send(embed=em("❌ انتهى الوقت", color=ERROR))
 
-    # 💸 بيع
-    elif content == "/بيع":
-        if msg.channel.id != PROPERTY_ROOM:
-            return
+        if amount > user["money"]:
+            return await msg.channel.send(embed=em("❌ فلوسك ما تكفي", color=ERROR))
 
-        if len(user["properties"]) < 100:
-            return await msg.reply("❌ تحتاج 100 عقار")
+        user["money"] -= amount
+        user["properties"].append(amount)
 
-        p = user["properties"].pop()
-        user["money"] += p["price"]
-
-        await msg.reply("✅ تم البيع")
-
-    # ================= ADMIN =================
-    if msg.channel.id == ADMIN_ROOM:
-
-        # 💰 إضافة
-        if content.startswith("/اضافة"):
-            parts = content.split()
-            if len(parts) < 3:
-                return
-
-            target = msg.mentions[0]
-            amount = int(parts[2])
-
-            create_user(target.id)
-            db[target.id]["money"] += amount
-
-            await msg.reply("✅ تم الإضافة")
-
-        # ❌ خصم
-        elif content.startswith("/خصم"):
-            parts = content.split()
-            target = msg.mentions[0]
-            amount = int(parts[2])
-
-            db[target.id]["money"] -= amount
-            await msg.reply("✅ تم الخصم")
-
-        # 🚫 حظر
-        elif content.startswith("/حظر"):
-            target = msg.mentions[0]
-            db[target.id]["banned"] = True
-            await msg.reply("🚫 تم الحظر")
-
-        # 🔓 فك
-        elif content.startswith("/فك"):
-            target = msg.mentions[0]
-            db[target.id]["banned"] = False
-            await msg.reply("✅ تم فك الحظر")
-
-        # 🔄 تصفير
-        elif content == "/تصفير":
-            db.clear()
-            await msg.reply("⚠️ تم تصفير الاقتصاد")
+        await msg.channel.send(embed=em("✅ تم الشراء", f"دفعت {amount}", SUCCESS))
 
     await bot.process_commands(msg)
+
+# ================= المزاد =================
+
+class BidView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="💰 مزايدة", style=discord.ButtonStyle.primary)
+    async def bid(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if not current_auction["active"]:
+            return await interaction.response.send_message("❌ المزاد انتهى", ephemeral=True)
+
+        create_user(interaction.user.id)
+        user = db[interaction.user.id]
+
+        new_price = current_auction["price"] + 1000
+
+        if user["money"] < new_price:
+            return await interaction.response.send_message("❌ فلوسك ما تكفي", ephemeral=True)
+
+        current_auction["price"] = new_price
+        current_auction["highest"] = interaction.user
+
+        await interaction.response.send_message(f"🔥 {interaction.user.mention} زاد إلى {new_price}")
+
+# ================= مزاد تلقائي =================
+
+cars = [
+    ("🚗 سيارة عادية", 5000),
+    ("🏎️ سبورت", 10000),
+    ("👑 روز رايز", 30000)
+]
+
+houses = [
+    ("🏠 بيت شعبي", 4000),
+    ("🏡 فيلا", 15000),
+    ("🏖️ فيلا على البحر", 40000)
+]
+
+@tasks.loop(minutes=30)
+async def auto_auction():
+    if current_auction["active"]:
+        return
+
+    channel = bot.get_channel(PROPERTY_ROOM)
+
+    item_type = random.choice(["car", "house"])
+
+    if item_type == "car":
+        name, price = random.choice(cars)
+    else:
+        name, price = random.choice(houses)
+
+    current_auction["active"] = True
+    current_auction["price"] = price
+    current_auction["highest"] = None
+
+    embed = em("🔥 مزاد جديد", f"{name}\n\n💰 البداية: {price}", GOLD)
+
+    msg = await channel.send(embed=embed, view=BidView())
+    current_auction["message"] = msg
+
+    await asyncio.sleep(600)  # 10 دقائق
+
+    # ⏱️ عد تنازلي
+    for i in [5,4,3,2,1]:
+        await channel.send(f"⏳ {i}")
+        await asyncio.sleep(1)
+
+    if not current_auction["highest"]:
+        await channel.send(embed=em("❌ انتهى المزاد", "لم يشارك أحد", ERROR))
+    else:
+        winner = current_auction["highest"]
+        user = db[winner.id]
+        user["money"] -= current_auction["price"]
+
+        await channel.send(embed=em("🏆 الفائز", f"{winner.mention}\n💰 {current_auction['price']}", SUCCESS))
+
+    current_auction["active"] = False
 
 bot.run(BOT_TOKEN)
