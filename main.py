@@ -1,167 +1,127 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import sqlite3
-import random
 import os
 from dotenv import load_dotenv
+import random
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="", intents=intents)
+
+CHANNEL_CREATE = 1499051894235201586
+ROLE_COMPANY_OWNER = 1498411802957058269
 
 # ===== DATABASE =====
 conn = sqlite3.connect("game.db")
 c = conn.cursor()
 
-c.execute("""CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    money INTEGER DEFAULT 100000,
-    company TEXT,
-    protected_until INTEGER DEFAULT 0
-)""")
-
+c.execute("""
+CREATE TABLE IF NOT EXISTS users(
+id INTEGER PRIMARY KEY,
+company TEXT,
+company_value INTEGER DEFAULT 0
+)
+""")
 conn.commit()
 
-# ===== READY =====
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-    investment_loop.start()
-    auction_loop.start()
-
-# ===== USER CHECK =====
-def get_user(user_id):
-    c.execute("SELECT * FROM users WHERE id=?", (user_id,))
-    user = c.fetchone()
-    if not user:
-        c.execute("INSERT INTO users (id) VALUES (?)", (user_id,))
+def get_user(uid):
+    c.execute("SELECT * FROM users WHERE id=?", (uid,))
+    u = c.fetchone()
+    if not u:
+        c.execute("INSERT INTO users(id) VALUES(?)", (uid,))
         conn.commit()
-        return get_user(user_id)
-    return user
+        return get_user(uid)
+    return u
 
-# ===== فلوس =====
-@bot.command()
-async def فلوس(ctx):
-    user = get_user(ctx.author.id)
-    await ctx.send(f"💰 فلوسك: {user[1]}")
+# ===== مودال إنشاء شركة =====
+class CreateCompanyModal(discord.ui.Modal, title="إنشاء شركة"):
+    name = discord.ui.TextInput(label="اسم الشركة", placeholder="اكتب الاسم هنا")
 
-# ===== شركة =====
-@bot.command()
-async def شركة(ctx, name):
-    c.execute("UPDATE users SET company=? WHERE id=?", (name, ctx.author.id))
-    conn.commit()
-    await ctx.send(f"🏢 تم إنشاء شركتك: {name}")
+    async def on_submit(self, interaction: discord.Interaction):
+        c.execute("UPDATE users SET company=?, company_value=? WHERE id=?",
+                  (self.name.value, random.randint(10000, 50000), interaction.user.id))
+        conn.commit()
 
-# ===== تحويل =====
-@bot.command()
-async def تحويل(ctx, member: discord.Member, amount: int):
-    user = get_user(ctx.author.id)
-    if user[1] < amount:
-        return await ctx.send("❌ ما عندك فلوس")
+        role = interaction.guild.get_role(ROLE_COMPANY_OWNER)
+        if role:
+            await interaction.user.add_roles(role)
 
-    c.execute("UPDATE users SET money=money-? WHERE id=?", (amount, ctx.author.id))
-    c.execute("UPDATE users SET money=money+? WHERE id=?", (amount, member.id))
-    conn.commit()
+        embed = discord.Embed(
+            title="🏢 تم إنشاء شركتك",
+            description=f"اسم الشركة: **{self.name.value}**",
+            color=0x00ff99
+        )
 
-    await ctx.send(f"💸 حولت {amount} إلى {member.mention}")
+        await interaction.response.send_message(embed=embed)
 
-# ===== تداول =====
-@bot.command()
-async def تداول(ctx, amount: int):
-    user = get_user(ctx.author.id)
+# ===== مودال تغيير الاسم =====
+class RenameCompanyModal(discord.ui.Modal, title="تغيير اسم الشركة"):
+    name = discord.ui.TextInput(label="الاسم الجديد")
 
-    if user[1] < amount:
-        return await ctx.send("❌ فلوسك قليلة")
+    async def on_submit(self, interaction: discord.Interaction):
+        c.execute("UPDATE users SET company=? WHERE id=?",
+                  (self.name.value, interaction.user.id))
+        conn.commit()
 
-    win = random.choice([True, False])
+        await interaction.response.send_message(
+            f"✅ تم تغيير اسم شركتك إلى {self.name.value}"
+        )
 
-    if win:
-        profit = int(amount * 0.2)
-        c.execute("UPDATE users SET money=money+? WHERE id=?", (profit, ctx.author.id))
-        await ctx.send(f"📈 ربحت {profit}")
-    else:
-        loss = int(amount * 0.2)
-        c.execute("UPDATE users SET money=money-? WHERE id=?", (loss, ctx.author.id))
-        await ctx.send(f"📉 خسرت {loss}")
+# ===== الأزرار =====
+class CompanyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    conn.commit()
+    @discord.ui.button(label="إنشاء شركة", style=discord.ButtonStyle.green)
+    async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(CreateCompanyModal())
 
-# ===== سرقة =====
-@bot.command()
-async def سرقة(ctx, member: discord.Member):
-    if member.bot:
+    @discord.ui.button(label="تغيير اسم الشركة", style=discord.ButtonStyle.blurple)
+    async def rename(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user = get_user(interaction.user.id)
+        if not user[1]:
+            return await interaction.response.send_message("❌ ما عندك شركة", ephemeral=True)
+
+        await interaction.response.send_modal(RenameCompanyModal())
+
+# ===== أمر إرسال القائمة =====
+@bot.event
+async def on_message(message):
+    if message.author.bot:
         return
 
-    amount = random.randint(1000, 400000)
+    # الأمر بدون !
+    if message.content == "شركة" and message.channel.id == CHANNEL_CREATE:
+        embed = discord.Embed(
+            title="🏢 نظام الشركات",
+            description="اضغط الزر لإنشاء شركتك أو تعديلها",
+            color=0x3498db
+        )
+        await message.channel.send(embed=embed, view=CompanyView())
 
-    c.execute("UPDATE users SET money=money+? WHERE id=?", (amount, ctx.author.id))
-    c.execute("UPDATE users SET money=money-? WHERE id=?", (amount, member.id))
-    conn.commit()
+    await bot.process_commands(message)
 
-    await ctx.send(f"🕵️ سرقت {amount} من {member.mention}")
-
-# ===== حماية =====
+# ===== رفع قيمة الشركة عند النجاح =====
 @bot.command()
-async def حماية(ctx):
+async def نجاح(ctx):
     user = get_user(ctx.author.id)
 
-    if user[1] < 300000:
-        return await ctx.send("❌ تحتاج 300 ألف")
+    if not user[1]:
+        return await ctx.send("❌ ما عندك شركة")
 
-    c.execute("UPDATE users SET money=money-? WHERE id=?", (300000, ctx.author.id))
+    increase = random.randint(5000, 20000)
+    c.execute("UPDATE users SET company_value=company_value+? WHERE id=?",
+              (increase, ctx.author.id))
     conn.commit()
 
-    await ctx.send("🛡️ تم تفعيل الحماية لمدة ساعتين")
-
-# ===== استثمار كل 10 دقايق =====
-@tasks.loop(minutes=10)
-async def investment_loop():
-    channel = bot.get_channel(1498037416672493829)
-
-    investments = [
-        ("🏨 فندق على البحر", 5000),
-        ("🏗️ بناء مستشفى", 500000),
-        ("🏠 بيت في الرياض", 150000),
-        ("🛢️ أرامكو", 3000000)
-    ]
-
-    inv = random.choice(investments)
-
-    await channel.send(f"📢 فرصة استثمار: {inv[0]}\n💰 الحد الأدنى: {inv[1]}")
-
-# ===== مزاد كل 30 دقيقة =====
-@tasks.loop(minutes=30)
-async def auction_loop():
-    channel = bot.get_channel(1498037416672493829)
-
-    items = ["🚗 سيارة", "🏠 بيت", "🏨 فندق"]
-
-    item = random.choice(items)
-    price = random.randint(100000, 500000)
-
-    await channel.send(f"🔥 مزاد جديد: {item}\n💰 يبدأ من {price}")
-
-# ===== اوامر الادارة =====
-ADMIN_CHANNEL = 1498037576538259556
-
-@bot.command()
-async def تصفير(ctx, member: discord.Member):
-    if ctx.channel.id != ADMIN_CHANNEL:
-        return
-
-    c.execute("UPDATE users SET money=0 WHERE id=?", (member.id,))
-    conn.commit()
-    await ctx.send("تم تصفيره")
-
-@bot.command()
-async def زيادة(ctx, member: discord.Member, amount: int):
-    if ctx.channel.id != ADMIN_CHANNEL:
-        return
-
-    c.execute("UPDATE users SET money=money+? WHERE id=?", (amount, member.id))
-    conn.commit()
-    await ctx.send("تمت الزيادة")
+    embed = discord.Embed(
+        title="📈 نجاح!",
+        description=f"ارتفعت قيمة شركة **{user[1]}** بمقدار {increase}",
+        color=0x2ecc71
+    )
+    await ctx.send(embed=embed)
 
 bot.run(TOKEN)
