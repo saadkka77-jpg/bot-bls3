@@ -1,302 +1,167 @@
-import os
-import random
-import asyncio
-from dotenv import load_dotenv
 import discord
 from discord.ext import commands, tasks
-from datetime import datetime, timedelta
+import sqlite3
+import random
+import os
+from dotenv import load_dotenv
 
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
 
-intents = discord.Intents.default()
-intents.message_content = True
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-bot = commands.Bot(command_prefix="", intents=intents)
+# ===== DATABASE =====
+conn = sqlite3.connect("game.db")
+c = conn.cursor()
 
-# 📍 رومات
-ROOM = 1498037416672493829
-ADMIN = 1498037576538259556
-FULL_ACCESS = 1498411802957058269
+c.execute("""CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    money INTEGER DEFAULT 100000,
+    company TEXT,
+    protected_until INTEGER DEFAULT 0
+)""")
 
-# 🎖️ رتبة المحظوظ
-LUCKY_ROLE = 1498410522255687832
+conn.commit()
 
-# 🎨 ألوان
-C = 0x2b2d31
-G = 0xFEE75C
-S = 0x57F287
-E = 0xED4245
-
-db = {}
-
-auction = {
-    "active": False,
-    "price": 0,
-    "owner": None,
-    "item": None
-}
-
-# ================= مستخدم =================
-def user(uid):
-    if uid not in db:
-        db[uid] = {
-            "money": 10000,
-            "items": [],
-            "company": None,
-            "shield": 0,
-            "last_trade": 0,
-            "last_invest": 0,
-            "last_rob": 0,
-            "bank": 0
-        }
-
-def emb(t, d="", c=C):
-    return discord.Embed(title=t, description=d, color=c)
-
-def is_lucky(member):
-    return any(r.id == LUCKY_ROLE for r in member.roles)
-
-def is_protected(u):
-    return u["shield"] > datetime.now().timestamp()
-
-# ================= READY =================
+# ===== READY =====
 @bot.event
 async def on_ready():
-    print("BOT READY")
-    auto_auction.start()
+    print(f"Logged in as {bot.user}")
+    investment_loop.start()
+    auction_loop.start()
 
-# ================= ON MESSAGE =================
-@bot.event
-async def on_message(msg):
-    if msg.author.bot:
+# ===== USER CHECK =====
+def get_user(user_id):
+    c.execute("SELECT * FROM users WHERE id=?", (user_id,))
+    user = c.fetchone()
+    if not user:
+        c.execute("INSERT INTO users (id) VALUES (?)", (user_id,))
+        conn.commit()
+        return get_user(user_id)
+    return user
+
+# ===== فلوس =====
+@bot.command()
+async def فلوس(ctx):
+    user = get_user(ctx.author.id)
+    await ctx.send(f"💰 فلوسك: {user[1]}")
+
+# ===== شركة =====
+@bot.command()
+async def شركة(ctx, name):
+    c.execute("UPDATE users SET company=? WHERE id=?", (name, ctx.author.id))
+    conn.commit()
+    await ctx.send(f"🏢 تم إنشاء شركتك: {name}")
+
+# ===== تحويل =====
+@bot.command()
+async def تحويل(ctx, member: discord.Member, amount: int):
+    user = get_user(ctx.author.id)
+    if user[1] < amount:
+        return await ctx.send("❌ ما عندك فلوس")
+
+    c.execute("UPDATE users SET money=money-? WHERE id=?", (amount, ctx.author.id))
+    c.execute("UPDATE users SET money=money+? WHERE id=?", (amount, member.id))
+    conn.commit()
+
+    await ctx.send(f"💸 حولت {amount} إلى {member.mention}")
+
+# ===== تداول =====
+@bot.command()
+async def تداول(ctx, amount: int):
+    user = get_user(ctx.author.id)
+
+    if user[1] < amount:
+        return await ctx.send("❌ فلوسك قليلة")
+
+    win = random.choice([True, False])
+
+    if win:
+        profit = int(amount * 0.2)
+        c.execute("UPDATE users SET money=money+? WHERE id=?", (profit, ctx.author.id))
+        await ctx.send(f"📈 ربحت {profit}")
+    else:
+        loss = int(amount * 0.2)
+        c.execute("UPDATE users SET money=money-? WHERE id=?", (loss, ctx.author.id))
+        await ctx.send(f"📉 خسرت {loss}")
+
+    conn.commit()
+
+# ===== سرقة =====
+@bot.command()
+async def سرقة(ctx, member: discord.Member):
+    if member.bot:
         return
 
-    if msg.channel.id not in [ROOM, ADMIN, FULL_ACCESS]:
-        return
+    amount = random.randint(1000, 400000)
 
-    user(msg.author.id)
-    u = db[msg.author.id]
+    c.execute("UPDATE users SET money=money+? WHERE id=?", (amount, ctx.author.id))
+    c.execute("UPDATE users SET money=money-? WHERE id=?", (amount, member.id))
+    conn.commit()
 
-    content = msg.content.lower()
-    now = datetime.now().timestamp()
+    await ctx.send(f"🕵️ سرقت {amount} من {member.mention}")
 
-    # ================= شركة =================
-    if content == "شركة":
-        if u["company"]:
-            return await msg.reply("❌ عندك شركة")
+# ===== حماية =====
+@bot.command()
+async def حماية(ctx):
+    user = get_user(ctx.author.id)
 
-        await msg.reply("💼 اكتب اسم شركتك")
+    if user[1] < 300000:
+        return await ctx.send("❌ تحتاج 300 ألف")
 
-        def check(m):
-            return m.author == msg.author and m.channel == msg.channel
+    c.execute("UPDATE users SET money=money-? WHERE id=?", (300000, ctx.author.id))
+    conn.commit()
 
-        try:
-            m = await bot.wait_for("message", timeout=30, check=check)
-            u["company"] = m.content
-        except:
-            return await msg.reply("❌ انتهى الوقت")
+    await ctx.send("🛡️ تم تفعيل الحماية لمدة ساعتين")
 
-        await msg.reply(f"✅ شركة: {u['company']}")
+# ===== استثمار كل 10 دقايق =====
+@tasks.loop(minutes=10)
+async def investment_loop():
+    channel = bot.get_channel(1498037416672493829)
 
-    # ================= استثمار =================
-    elif content == "استثمار":
-        if not u["company"]:
-            return await msg.reply("❌ لازم شركة")
+    investments = [
+        ("🏨 فندق على البحر", 5000),
+        ("🏗️ بناء مستشفى", 500000),
+        ("🏠 بيت في الرياض", 150000),
+        ("🛢️ أرامكو", 3000000)
+    ]
 
-        if now - u["last_invest"] < 120:
-            return await msg.reply("⏳ انتظر دقيقتين")
+    inv = random.choice(investments)
 
-        u["last_invest"] = now
+    await channel.send(f"📢 فرصة استثمار: {inv[0]}\n💰 الحد الأدنى: {inv[1]}")
 
-        result = random.choice(["ربح", "خسارة", "ثبات"])
-        amount = random.randint(500, 3000)
-
-        if is_lucky(msg.author):
-            result = "ربح"
-
-        if result == "ربح":
-            u["money"] += amount
-        elif result == "خسارة":
-            u["money"] -= amount
-
-        await msg.reply(embed=emb("📈 استثمار", f"{result} | {amount}", G))
-
-    # ================= تداول =================
-    elif content == "تداول":
-        if not u["company"]:
-            return await msg.reply("❌ لازم شركة")
-
-        if now - u["last_trade"] < 120:
-            return await msg.reply("⏳ انتظر دقيقتين")
-
-        u["last_trade"] = now
-
-        r = random.choice(["ربح", "خسارة"])
-        amount = random.randint(1000, 5000)
-
-        if is_lucky(msg.author):
-            r = "ربح"
-
-        if r == "ربح":
-            u["money"] += amount
-        else:
-            u["money"] -= amount
-
-        await msg.reply(embed=emb("📊 تداول", f"{r} | {amount}", G))
-
-    # ================= حماية =================
-    elif content == "حماية":
-        cost = 3000
-
-        if u["money"] < cost:
-            return await msg.reply("❌ ما عندك")
-
-        u["money"] -= cost
-        u["shield"] = now + 7200
-
-        await msg.author.send("🛡️ حماية لمدة ساعتين")
-
-    # ================= سرقة =================
-    elif content == "سرقة":
-        target_id = random.choice(list(db.keys()))
-        target = db[target_id]
-
-        if target_id == msg.author.id:
-            return
-
-        if is_protected(target):
-            return await msg.reply("🛡️ محمي")
-
-        if now - u["last_rob"] < 30:
-            return await msg.reply("⏳ انتظر")
-
-        u["last_rob"] = now
-
-        steal = random.randint(500, 2000)
-
-        target["money"] -= steal
-        u["money"] += steal
-
-        await msg.reply(embed=emb("🕵️ سرقة", f"+{steal}", S))
-
-    # ================= رصيد =================
-    elif content == "رصيدي":
-        await msg.reply(embed=emb("💰 رصيد", str(u["money"]), G))
-
-    # ================= بنك =================
-    elif content == "بنك":
-        await msg.reply(embed=emb("🏦 البنك", str(u["bank"]), G))
-
-    elif content.startswith("إيداع"):
-        try:
-            amount = int(content.split()[1])
-        except:
-            return await msg.reply("❌ رقم")
-
-        if u["money"] < amount:
-            return await msg.reply("❌ ما عندك")
-
-        u["money"] -= amount
-        u["bank"] += amount
-
-        await msg.reply(embed=emb("🏦 إيداع", str(amount), S))
-
-    elif content.startswith("سحب"):
-        try:
-            amount = int(content.split()[1])
-        except:
-            return await msg.reply("❌ رقم")
-
-        if u["bank"] < amount:
-            return await msg.reply("❌ البنك فاضي")
-
-        u["bank"] -= amount
-        u["money"] += amount
-
-        await msg.reply(embed=emb("💸 سحب", str(amount), S))
-
-    elif content.startswith("تحويل"):
-        try:
-            target = msg.mentions[0]
-            amount = int(content.split()[2])
-        except:
-            return await msg.reply("❌ تحويل @user amount")
-
-        user(target.id)
-
-        if u["money"] < amount:
-            return await msg.reply("❌ ما عندك")
-
-        u["money"] -= amount
-        db[target.id]["money"] += amount
-
-        await msg.reply(embed=emb("🔁 تحويل", f"{amount} → {target.mention}", G))
-
-    await bot.process_commands(msg)
-
-# ================= مزاد =================
-class AuctionView(discord.ui.View):
-    def __init__(self):
-        super().__init__()
-
-    @discord.ui.button(label="مزايدة", style=discord.ButtonStyle.green)
-    async def bid(self, i, b):
-
-        if not auction["active"]:
-            return await i.response.send_message("انتهى", ephemeral=True)
-
-        user(i.user.id)
-        u = db[i.user.id]
-
-        price = auction["price"] + 1000
-
-        if is_lucky(i.user):
-            price -= 500
-
-        if u["money"] < price:
-            return await i.response.send_message("❌ ما يكفي", ephemeral=True)
-
-        auction["price"] = price
-        auction["owner"] = i.user
-
-        await i.channel.send(f"🔥 {i.user.mention} {price}")
-
-# ================= مزاد تلقائي =================
-items = ["🚗 سيارة", "🏠 بيت", "🏎️ روز رايز", "🏡 فيلا"]
-
+# ===== مزاد كل 30 دقيقة =====
 @tasks.loop(minutes=30)
-async def auto_auction():
-    if auction["active"]:
-        return
+async def auction_loop():
+    channel = bot.get_channel(1498037416672493829)
 
-    ch = bot.get_channel(ROOM)
+    items = ["🚗 سيارة", "🏠 بيت", "🏨 فندق"]
 
     item = random.choice(items)
-    price = random.randint(5000, 50000)
+    price = random.randint(100000, 500000)
 
-    auction["active"] = True
-    auction["price"] = price
-    auction["item"] = item
-    auction["owner"] = None
+    await channel.send(f"🔥 مزاد جديد: {item}\n💰 يبدأ من {price}")
 
-    await ch.send(embed=emb("🔥 مزاد", f"{item}\n💰 {price}", G), view=AuctionView())
+# ===== اوامر الادارة =====
+ADMIN_CHANNEL = 1498037576538259556
 
-    await asyncio.sleep(300)
+@bot.command()
+async def تصفير(ctx, member: discord.Member):
+    if ctx.channel.id != ADMIN_CHANNEL:
+        return
 
-    for i in [5,4,3,2,1]:
-        await ch.send(f"⏳ {i}")
-        await asyncio.sleep(1)
+    c.execute("UPDATE users SET money=0 WHERE id=?", (member.id,))
+    conn.commit()
+    await ctx.send("تم تصفيره")
 
-    if auction["owner"]:
-        u = db[auction["owner"].id]
-        u["money"] -= auction["price"]
-        u["items"].append(auction["item"])
+@bot.command()
+async def زيادة(ctx, member: discord.Member, amount: int):
+    if ctx.channel.id != ADMIN_CHANNEL:
+        return
 
-        await ch.send(f"🏆 فاز {auction['owner'].mention}")
-    else:
-        await ch.send("❌ لا أحد شارك")
+    c.execute("UPDATE users SET money=money+? WHERE id=?", (amount, member.id))
+    conn.commit()
+    await ctx.send("تمت الزيادة")
 
-    auction["active"] = False
-
-TOKEN = os.getenv("TOKEN") 
+bot.run(TOKEN)
