@@ -299,4 +299,4 @@ async def auto_auction():
 
     auction["active"] = False
 
-TOKEN = os.getenv("BOT_TOKEN") 
+TOKEN = os.getenv("TOKEN") 
