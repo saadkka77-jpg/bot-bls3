@@ -3,9 +3,12 @@ from discord.ext import commands, tasks
 import sqlite3
 import random
 import time
+import os
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 # ===== DATABASE =====
 conn = sqlite3.connect("game.db")
@@ -19,6 +22,7 @@ company TEXT,
 company_value INTEGER DEFAULT 0,
 last_trade INTEGER DEFAULT 0,
 last_steal INTEGER DEFAULT 0,
+last_invest INTEGER DEFAULT 0,
 shield_until INTEGER DEFAULT 0
 )
 """)
@@ -35,19 +39,13 @@ def get_user(uid):
     return user
 
 
-# ===== إنشاء شركة =====
+# ===== شركة =====
 @bot.command()
 async def شركة(ctx):
-    embed = discord.Embed(
-        title="🏢 نظام الشركات",
-        description="اكتب اسم شركتك:",
-        color=0x2b2d31
-    )
-
-    await ctx.send(embed=embed)
+    await ctx.send("🏢 اكتب اسم شركتك:")
 
     def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel
+        return m.author == ctx.author
 
     msg = await bot.wait_for("message", check=check)
 
@@ -57,12 +55,7 @@ async def شركة(ctx):
               (msg.content, value, ctx.author.id))
     conn.commit()
 
-    embed = discord.Embed(
-        title="📁 تم إنشاء الشركة",
-        description=f"🏷️ الاسم: {msg.content}\n💰 القيمة: {value}",
-        color=0x00ff99
-    )
-    await ctx.send(embed=embed)
+    await ctx.send(f"✅ تم إنشاء شركتك: {msg.content} | 💰 {value}")
 
 
 # ===== فلوسي =====
@@ -84,7 +77,7 @@ async def تحويل(ctx, member: discord.Member, amount: int):
     user = get_user(ctx.author.id)
 
     if user[1] < amount:
-        return await ctx.send("❌ ما عندك فلوس كافية")
+        return await ctx.send("❌ فلوسك ما تكفي")
 
     c.execute("UPDATE users SET money=money-? WHERE id=?", (amount, ctx.author.id))
     c.execute("UPDATE users SET money=money+? WHERE id=?", (amount, member.id))
@@ -102,7 +95,7 @@ async def تداول(ctx, amount: int):
         return await ctx.send("❌ فلوسك ما تكفي")
 
     if time.time() - user[4] < 60:
-        return await ctx.send("⏳ انتظر دقيقة")
+        return await ctx.send("⏳ لازم تنتظر دقيقة")
 
     win = random.choice([True, False])
 
@@ -121,24 +114,68 @@ async def تداول(ctx, amount: int):
     await ctx.send(msg)
 
 
-# ===== استثمار عشوائي =====
+# ===== الاستثمار =====
+current_investment = None
+
+@bot.command()
+async def استثمار(ctx, amount: int):
+    global current_investment
+
+    user = get_user(ctx.author.id)
+
+    if not current_investment:
+        return await ctx.send("❌ ما فيه استثمار حالياً")
+
+    if amount < current_investment["min"]:
+        return await ctx.send("❌ أقل من الحد الأدنى")
+
+    if user[1] < amount:
+        return await ctx.send("❌ فلوسك ما تكفي")
+
+    if time.time() - user[6] < 60:
+        return await ctx.send("⏳ لازم تنتظر دقيقة")
+
+    win = random.random() < current_investment["win"]
+
+    if win:
+        profit = int(amount * random.uniform(1.2, 2))
+        c.execute("UPDATE users SET money=money+? WHERE id=?", (profit, ctx.author.id))
+        msg = f"📈 ربحت {profit}"
+    else:
+        loss = int(amount * random.uniform(0.5, 1))
+        c.execute("UPDATE users SET money=money-? WHERE id=?", (loss, ctx.author.id))
+        msg = f"📉 خسرت {loss}"
+
+    c.execute("UPDATE users SET last_invest=? WHERE id=?", (time.time(), ctx.author.id))
+    conn.commit()
+
+    await ctx.send(msg)
+
+
+# ===== استثمار تلقائي =====
 investments = [
-    ("🏝️ فندق على البحر", 5000),
-    ("🏢 بناء مستشفى", 500000),
-    ("🏠 بيت شمال الرياض", 150000),
-    ("🛢️ أرامكو", 3000000)
+    {"name": "🏝️ فندق", "min": 5000, "win": 0.6},
+    {"name": "🏢 مستشفى", "min": 500000, "win": 0.5},
+    {"name": "🏠 بيت", "min": 150000, "win": 0.55},
+    {"name": "🛢️ أرامكو", "min": 3000000, "win": 0.8},
 ]
+
+CHANNEL_ID = 123456789  # حط آيدي الروم هنا
 
 
 @tasks.loop(minutes=10)
 async def investment_event():
-    channel = bot.get_channel(YOUR_CHANNEL_ID)
+    global current_investment
 
-    name, min_amount = random.choice(investments)
+    channel = bot.get_channel(CHANNEL_ID)
+    if not channel:
+        return
+
+    current_investment = random.choice(investments)
 
     embed = discord.Embed(
-        title="📊 فرصة استثمار",
-        description=f"{name}\n💰 الحد الأدنى: {min_amount}",
+        title="📊 استثمار جديد",
+        description=f"{current_investment['name']}\n💰 الحد الأدنى: {current_investment['min']}\nاكتب: !استثمار مبلغ",
         color=0xf1c40f
     )
 
@@ -154,11 +191,10 @@ async def سرقة(ctx, member: discord.Member):
     if time.time() - user[5] < 300:
         return await ctx.send("⏳ انتظر 5 دقايق")
 
-    if target[6] > time.time():
+    if target[7] > time.time():
         return await ctx.send("🛡️ الشخص محمي")
 
-    question = "ما هو الرقم الصحيح؟\n1) 123\n2) 321\n3) 312"
-    await ctx.send(question)
+    await ctx.send("ما هو الصحيح؟ 123 / 321 / 312")
 
     def check(m):
         return m.author == ctx.author
@@ -166,7 +202,7 @@ async def سرقة(ctx, member: discord.Member):
     msg = await bot.wait_for("message", check=check)
 
     if msg.content != "123":
-        return await ctx.send("❌ إجابة غلط")
+        return await ctx.send("❌ غلط")
 
     amount = random.randint(1000, min(400000, target[1]))
 
@@ -175,10 +211,10 @@ async def سرقة(ctx, member: discord.Member):
     c.execute("UPDATE users SET last_steal=? WHERE id=?", (time.time(), ctx.author.id))
     conn.commit()
 
-    await ctx.send(f"💰 سرقت {amount} من {member.mention}")
+    await ctx.send(f"💰 سرقت {amount}")
 
     try:
-        await member.send(f"🚨 تم سرقتك بواسطة {ctx.author}")
+        await member.send(f"🚨 انسرقت من {ctx.author}")
     except:
         pass
 
@@ -195,14 +231,14 @@ async def حماية(ctx):
               (300000, time.time() + 7200, ctx.author.id))
     conn.commit()
 
-    await ctx.send("🛡️ تم تفعيل الحماية ساعتين")
+    await ctx.send("🛡️ حماية لمدة ساعتين")
 
 
 # ===== تشغيل =====
 @bot.event
 async def on_ready():
-    print("Bot is ready")
+    print("✅ Bot Ready")
     investment_event.start()
 
 
-bot.run("DISCORD_TOKEN")
+bot.run(TOKEN)
