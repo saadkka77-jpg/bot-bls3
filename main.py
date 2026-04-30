@@ -205,4 +205,4 @@ async def on_ready():
     investment_event.start()
 
 
-bot.run("YOUR_TOKEN")
+bot.run("DISCORD_TOKEN")
