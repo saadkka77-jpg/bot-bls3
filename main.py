@@ -1,212 +1,205 @@
-require("dotenv").config();
-const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
-const mongoose = require("mongoose");
+import discord
+from discord.ext import commands
+import random
+import time
+import os
+from pymongo import MongoClient
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-});
+intents = discord.Intents.default()
+intents.message_content = True
 
-// اتصال قاعدة البيانات
-mongoose.connect(process.env.MONGO_URI).then(() => {
-  console.log("✅ MongoDB Connected");
-});
+bot = commands.Bot(command_prefix="", intents=intents)
 
-// سكيمة اللاعب
-const userSchema = new mongoose.Schema({
-  userId: String,
-  money: { type: Number, default: 1000 },
-  gold: { type: Number, default: 0 },
-  diamonds: { type: Number, default: 0 },
-  lands: { type: Number, default: 0 },
-  lastInvest: { type: Number, default: 0 },
-  lastTrade: { type: Number, default: 0 },
-  lastSteal: { type: Number, default: 0 }
-});
+# MongoDB
+mongo = MongoClient(os.getenv("MONGO_URI"))
+db = mongo["economy"]
+users = db["users"]
 
-const User = mongoose.model("User", userSchema);
+def get_user(user_id):
+    user = users.find_one({"userId": str(user_id)})
+    if not user:
+        user = {
+            "userId": str(user_id),
+            "money": 1000,
+            "gold": 0,
+            "diamonds": 0,
+            "lands": 0,
+            "lastInvest": 0,
+            "lastTrade": 0,
+            "lastSteal": 0
+        }
+        users.insert_one(user)
+    return user
 
-// جلب مستخدم
-async function getUser(id) {
-  let user = await User.findOne({ userId: id });
-  if (!user) user = await User.create({ userId: id });
-  return user;
-}
+def save_user(user):
+    users.update_one({"userId": user["userId"]}, {"$set": user})
 
-// Embed جاهز
-function embed(title, desc, color = "#2b2d31") {
-  return new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(desc)
-    .setColor(color)
-    .setFooter({ text: "نظام الاقتصاد" })
-    .setTimestamp();
-}
+def embed(title, desc, color=0x2b2d31):
+    e = discord.Embed(title=title, description=desc, color=color)
+    e.set_footer(text="نظام الاقتصاد")
+    return e
 
-client.on("messageCreate", async (msg) => {
-  if (msg.author.bot) return;
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as {bot.user}")
 
-  const args = msg.content.split(" ");
-  const cmd = args[0];
+@bot.event
+async def on_message(msg):
+    if msg.author.bot:
+        return
 
-  const user = await getUser(msg.author.id);
+    args = msg.content.split()
+    cmd = args[0]
 
-  // 📊 ممتلكاتي
-  if (cmd === "ممتلكاتي") {
-    return msg.reply({
-      embeds: [embed("📊 ممتلكاتك", `
-💵 الفلوس: **${user.money}**
-🥇 الذهب: **${user.gold}**
-💎 الماس: **${user.diamonds}**
-🏝️ الأراضي: **${user.lands}**
-      `, "#00bcd4")]
-    });
-  }
+    user = get_user(msg.author.id)
 
-  // 📈 استثمار
-  if (cmd === "استثمار") {
-    const now = Date.now();
-    if (now - user.lastInvest < 180000)
-      return msg.reply({ embeds: [embed("⏳", "انتظر 3 دقايق")] });
+    # ممتلكاتي
+    if cmd == "ممتلكاتي":
+        await msg.reply(embed=embed("📊 ممتلكاتك",
+        f"""
+💵 الفلوس: **{user['money']}**
+🥇 الذهب: **{user['gold']}**
+💎 الماس: **{user['diamonds']}**
+🏝️ الأراضي: **{user['lands']}**
+""", 0x00bcd4))
 
-    let amount = args[1] === "كل" ? user.money : parseInt(args[1]);
-    if (!amount || amount <= 0)
-      return msg.reply({ embeds: [embed("❌", "اكتب مبلغ صحيح")] });
+    # استثمار
+    elif cmd == "استثمار":
+        now = time.time()
+        if now - user["lastInvest"] < 180:
+            return await msg.reply(embed=embed("⏳", "انتظر 3 دقايق"))
 
-    if (user.money < amount)
-      return msg.reply({ embeds: [embed("❌", "ما عندك المبلغ")] });
+        try:
+            amount = user["money"] if args[1] == "كل" else int(args[1])
+        except:
+            return await msg.reply(embed=embed("❌", "اكتب مبلغ صحيح"))
 
-    user.money -= amount;
-    user.lastInvest = now;
+        if user["money"] < amount or amount <= 0:
+            return await msg.reply(embed=embed("❌", "ما عندك المبلغ"))
 
-    let win = Math.random() < 0.5;
-    let change = Math.floor(amount * (Math.random() * 0.5));
+        user["money"] -= amount
+        user["lastInvest"] = now
 
-    if (win) {
-      user.money += amount + change;
-      msg.reply({ embeds: [embed("📈 استثمار ناجح", `ربحت **${change}** 💰`, "#4caf50")] });
-    } else {
-      msg.reply({ embeds: [embed("📉 استثمار فاشل", `خسرت **${change}**`, "#f44336")] });
-    }
+        change = int(amount * random.uniform(0, 0.5))
 
-    await user.save();
-  }
+        if random.random() < 0.5:
+            user["money"] += amount + change
+            await msg.reply(embed=embed("📈 استثمار ناجح", f"ربحت **{change}** 💰", 0x4caf50))
+        else:
+            await msg.reply(embed=embed("📉 استثمار فاشل", f"خسرت **{change}**", 0xf44336))
 
-  // 📊 تداول
-  if (cmd === "تداول") {
-    const now = Date.now();
-    if (now - user.lastTrade < 180000)
-      return msg.reply({ embeds: [embed("⏳", "انتظر 3 دقايق")] });
+        save_user(user)
 
-    let amount = args[1] === "كل" ? user.money : parseInt(args[1]);
+    # تداول
+    elif cmd == "تداول":
+        now = time.time()
+        if now - user["lastTrade"] < 180:
+            return await msg.reply(embed=embed("⏳", "انتظر 3 دقايق"))
 
-    if (!amount || amount <= 0)
-      return msg.reply({ embeds: [embed("❌", "اكتب مبلغ صحيح")] });
+        try:
+            amount = user["money"] if args[1] == "كل" else int(args[1])
+        except:
+            return await msg.reply(embed=embed("❌", "اكتب مبلغ صحيح"))
 
-    if (user.money < amount)
-      return msg.reply({ embeds: [embed("❌", "ما عندك")] });
+        if user["money"] < amount or amount <= 0:
+            return await msg.reply(embed=embed("❌", "ما عندك"))
 
-    user.money -= amount;
-    user.lastTrade = now;
+        user["money"] -= amount
+        user["lastTrade"] = now
 
-    let win = Math.random() < 0.5;
-    let change = Math.floor(amount * (Math.random() * 0.7));
+        change = int(amount * random.uniform(0, 0.7))
 
-    if (win) {
-      user.money += amount + change;
-      msg.reply({ embeds: [embed("💹 تداول ناجح", `كسبت **${change}**`, "#4caf50")] });
-    } else {
-      msg.reply({ embeds: [embed("📉 تداول خاسر", `خسرت **${change}**`, "#f44336")] });
-    }
+        if random.random() < 0.5:
+            user["money"] += amount + change
+            await msg.reply(embed=embed("💹 تداول ناجح", f"كسبت **{change}**", 0x4caf50))
+        else:
+            await msg.reply(embed=embed("📉 تداول خاسر", f"خسرت **{change}**", 0xf44336))
 
-    await user.save();
-  }
+        save_user(user)
 
-  // 🎰 روليت
-  if (cmd === "روليت") {
-    let rand = Math.floor(Math.random() * 4);
+    # روليت
+    elif cmd == "روليت":
+        r = random.randint(0, 3)
 
-    if (rand === 0) {
-      let x = Math.floor(Math.random() * 500);
-      user.gold += x;
-      msg.reply({ embeds: [embed("🎰 روليت", `🥇 حصلت **${x} ذهب**`, "#ffd700")] });
-    }
+        if r == 0:
+            x = random.randint(1, 500)
+            user["gold"] += x
+            text = f"🥇 حصلت **{x} ذهب**"
+        elif r == 1:
+            x = random.randint(1, 300)
+            user["diamonds"] += x
+            text = f"💎 حصلت **{x} ماس**"
+        elif r == 2:
+            x = random.randint(1, 3)
+            user["lands"] += x
+            text = f"🏝️ حصلت **{x} أرض**"
+        else:
+            x = random.randint(1, 1000)
+            user["money"] += x
+            text = f"💵 حصلت **{x} فلوس**"
 
-    if (rand === 1) {
-      let x = Math.floor(Math.random() * 300);
-      user.diamonds += x;
-      msg.reply({ embeds: [embed("🎰 روليت", `💎 حصلت **${x} ماس**`, "#00e5ff")] });
-    }
+        save_user(user)
+        await msg.reply(embed=embed("🎰 روليت", text))
 
-    if (rand === 2) {
-      let x = Math.floor(Math.random() * 3);
-      user.lands += x;
-      msg.reply({ embeds: [embed("🎰 روليت", `🏝️ حصلت **${x} أرض**`, "#8bc34a")] });
-    }
+    # سرقة (نهب + منشن)
+    elif cmd == "سرقة":
+        if not msg.mentions:
+            return await msg.reply("من تبي تنهب؟")
 
-    if (rand === 3) {
-      let x = Math.floor(Math.random() * 1000);
-      user.money += x;
-      msg.reply({ embeds: [embed("🎰 روليت", `💵 حصلت **${x} فلوس**`, "#4caf50")] });
-    }
+        target = msg.mentions[0]
+        victim = get_user(target.id)
 
-    await user.save();
-  }
+        now = time.time()
+        if now - user["lastSteal"] < 300:
+            return await msg.reply(embed=embed("⏳", "انتظر 5 دقايق"))
 
-  // 🕵️ سرقة (نهب + منشن)
-  if (cmd === "سرقة") {
-    const target = msg.mentions.users.first();
-    if (!target) return msg.reply("من تبي تنهب؟");
+        if victim["money"] <= 0:
+            return await msg.reply(embed=embed("❌", "الشخص لا يملك مال"))
 
-    const now = Date.now();
-    if (now - user.lastSteal < 300000)
-      return msg.reply({ embeds: [embed("⏳", "انتظر 5 دقايق")] });
+        stolen = random.randint(0, victim["money"])
 
-    const victim = await getUser(target.id);
+        victim["money"] -= stolen
+        user["money"] += stolen
+        user["lastSteal"] = now
 
-    if (victim.money <= 0)
-      return msg.reply({ embeds: [embed("❌", "الشخص لا يملك مال")] });
+        save_user(victim)
+        save_user(user)
 
-    let stolen = Math.floor(Math.random() * victim.money);
+        await msg.reply(
+            content=f"🚨 {target.mention}",
+            embed=embed("🕵️ نهب!", f"تم نهب **{stolen}** 💰 من {target.mention}\nيا حرامي وش اليد الخفيفة هذي 😈", 0xff9800)
+        )
 
-    victim.money -= stolen;
-    user.money += stolen;
-    user.lastSteal = now;
+    # بيع
+    elif cmd == "بيع":
+        try:
+            type_ = args[2]
+        except:
+            return await msg.reply("اكتب: بيع [كم] [gold/diamonds/lands]")
 
-    await victim.save();
-    await user.save();
+        if type_ not in ["gold", "diamonds", "lands"]:
+            return await msg.reply("gold / diamonds / lands")
 
-    msg.reply({
-      content: `🚨 ${target}`,
-      embeds: [embed("🕵️ نهب!", `تم نهب **${stolen}** 💰 من ${target}\nيا حرامي وش اليد الخفيفة هذي 😈`, "#ff9800")]
-    });
-  }
+        if args[1] == "كل":
+            amount = user[type_]
+        elif args[1] == "نص":
+            amount = user[type_] // 2
+        else:
+            try:
+                amount = int(args[1])
+            except:
+                return await msg.reply("اكتب رقم صحيح")
 
-  // 💰 بيع
-  if (cmd === "بيع") {
-    let type = args[2];
-    if (!["gold", "diamonds", "lands"].includes(type))
-      return msg.reply("اكتب: gold / diamonds / lands");
+        if amount <= 0 or user[type_] < amount:
+            return await msg.reply(embed=embed("❌", "ما عندك الكمية"))
 
-    let amount;
-    if (args[1] === "كل") amount = user[type];
-    else if (args[1] === "نص") amount = Math.floor(user[type] / 2);
-    else amount = parseInt(args[1]);
+        price = random.randint(1, 100)
 
-    if (!amount || user[type] < amount)
-      return msg.reply({ embeds: [embed("❌", "ما عندك الكمية")] });
+        user[type_] -= amount
+        user["money"] += amount * price
 
-    let price = Math.floor(Math.random() * 100);
+        save_user(user)
 
-    user[type] -= amount;
-    user.money += amount * price;
+        await msg.reply(embed=embed("💰 بيع ناجح", f"بعت **{amount} {type_}** بسعر **{price}**", 0x4caf50))
 
-    await user.save();
-
-    msg.reply({
-      embeds: [embed("💰 بيع ناجح", `بعت **${amount} ${type}** بسعر **${price}**`, "#4caf50")]
-    });
-  }
-});
-
-// تشغيل
-client.login(process.env.DISCORD_TOKEN);
+bot.run(os.getenv("DISCORD_TOKEN"))
