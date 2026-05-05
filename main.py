@@ -17,10 +17,12 @@ DATA_FILE = Path("economy_data.json")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
-# هذا الروم سيكون لوحة الإدارة + مكان نزول الأحداث
-CONTROL_CHANNEL_ID = 1498037416672493829
+# روم لوحة الإدارة فقط
+ADMIN_PANEL_CHANNEL_ID = 1498037576538259556
+# روم نزول الأحداث العامة
+EVENT_PUBLIC_CHANNEL_ID = 1498037416672493829
 
-# فقط هذه الرتب أو الأدمن يقدرون يستخدمون لوحة الإدارة
+# الرتب المسموح لها باستخدام لوحة الإدارة
 ADMIN_ROLE_IDS = {
     1478970736717598840,
     1495873706923393205,
@@ -70,6 +72,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.members = True
+
 bot = commands.Bot(command_prefix="", intents=intents, help_command=None)
 event_cleanup_task: asyncio.Task | None = None
 
@@ -154,10 +157,6 @@ def has_admin_access(member: discord.Member) -> bool:
     return any(role.id in ADMIN_ROLE_IDS for role in member.roles)
 
 
-def is_control_channel(channel: discord.abc.MessageableChannel) -> bool:
-    return isinstance(channel, discord.TextChannel) and channel.id == CONTROL_CHANNEL_ID
-
-
 def base_embed(color: int = COLOR_PRIMARY) -> discord.Embed:
     embed = discord.Embed(color=color)
     embed.set_footer(text="BLS Economy")
@@ -205,9 +204,9 @@ def admin_panel_embed() -> discord.Embed:
     embed = base_embed(COLOR_INFO)
     embed.title = "لوحة التحكم الخاصة"
     embed.description = (
-        "لوحة مخصصة للإدارة والأدوار المصرح لها.\n"
-        "اضغط الزر المناسب ثم حدد الكمية وعدد الأشخاص.\n"
-        "الحدث ينزل في هذا الروم نفسه، ويستمر `5 دقائق` فقط ثم ينحذف تلقائيًا."
+        "هذه اللوحة خاصة بالإدارة فقط.\n"
+        f"الأحداث ستُنشر تلقائيًا في روم الأعضاء: `{EVENT_PUBLIC_CHANNEL_ID}`\n"
+        "كل حدث يستمر `5 دقائق` ثم يُحذف تلقائيًا."
     )
     return embed
 
@@ -364,7 +363,6 @@ class ClaimEventView(discord.ui.View):
 
         event["claimed_by"].append(user_id)
         event["remaining"] -= 1
-
         reward = EVENT_REWARD_TYPES[event["reward_type"]]
 
         if event["remaining"] <= 0:
@@ -406,8 +404,8 @@ class EventCreateModal(discord.ui.Modal):
             await interaction.response.send_message("هذه اللوحة مخصصة فقط للرتب المصرح لها.", ephemeral=True)
             return
 
-        if interaction.channel_id != CONTROL_CHANNEL_ID:
-            await interaction.response.send_message("استخدم اللوحة داخل الروم المحدد فقط.", ephemeral=True)
+        if interaction.channel_id != ADMIN_PANEL_CHANNEL_ID:
+            await interaction.response.send_message("استخدم اللوحة داخل روم الإدارة فقط.", ephemeral=True)
             return
 
         try:
@@ -421,6 +419,11 @@ class EventCreateModal(discord.ui.Modal):
         if old_event:
             await clear_active_event("تم استبدال الحدث بحدث جديد.")
 
+        public_channel = bot.get_channel(EVENT_PUBLIC_CHANNEL_ID)
+        if not isinstance(public_channel, discord.TextChannel):
+            await interaction.response.send_message("ما قدرت أوصل لروم الحدث العام.", ephemeral=True)
+            return
+
         reward = EVENT_REWARD_TYPES[self.reward_type]
         event = {
             "reward_type": self.reward_type,
@@ -428,12 +431,12 @@ class EventCreateModal(discord.ui.Modal):
             "remaining": limit,
             "claimed_by": [],
             "creator_name": str(interaction.user),
-            "channel_id": interaction.channel_id,
+            "channel_id": public_channel.id,
             "message_id": 0,
             "expires_at": time.time() + EVENT_DURATION_SECONDS,
         }
 
-        message = await interaction.channel.send(embed=event_post_embed(event), view=ClaimEventView())
+        message = await public_channel.send(embed=event_post_embed(event), view=ClaimEventView())
         event["message_id"] = message.id
         set_active_event(event)
         schedule_event_cleanup()
@@ -454,8 +457,8 @@ class AdminPanelView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def open_modal(self, interaction: discord.Interaction, reward_type: str) -> None:
-        if interaction.channel_id != CONTROL_CHANNEL_ID:
-            await interaction.response.send_message("هذه اللوحة تعمل في الروم المحدد فقط.", ephemeral=True)
+        if interaction.channel_id != ADMIN_PANEL_CHANNEL_ID:
+            await interaction.response.send_message("هذه اللوحة تعمل فقط في روم الإدارة.", ephemeral=True)
             return
 
         if not isinstance(interaction.user, discord.Member) or not has_admin_access(interaction.user):
@@ -487,10 +490,10 @@ async def on_ready() -> None:
     bot.add_view(AdminPanelView())
     bot.add_view(ClaimEventView())
 
-    channel = bot.get_channel(CONTROL_CHANNEL_ID)
-    if isinstance(channel, discord.TextChannel):
+    panel_channel = bot.get_channel(ADMIN_PANEL_CHANNEL_ID)
+    if isinstance(panel_channel, discord.TextChannel):
         try:
-            await update_panel_message(channel)
+            await update_panel_message(panel_channel)
         except discord.HTTPException:
             logger.exception("Failed to ensure admin panel message.")
 
@@ -530,7 +533,6 @@ async def on_message(message: discord.Message) -> None:
                 "`شراء`\n"
                 "`شراء <العنصر> <الكمية>`\n"
                 "`بيع <العنصر> <الكمية/كل>`\n"
-                "`اوامر`\n"
                 "أوامر الإدارة: `لوحة الادارة`"
             )
             await message.reply(embed=embed)
@@ -762,8 +764,8 @@ async def on_message(message: discord.Message) -> None:
         if cmd == "لوحة" and len(args) > 1 and args[1] == "الادارة":
             if not isinstance(message.author, discord.Member) or not has_admin_access(message.author):
                 raise ValueError("هذا الأمر فقط للرتب المصرح لها.")
-            if message.channel.id != CONTROL_CHANNEL_ID:
-                raise ValueError(f"استخدم هذا الأمر داخل الروم: {CONTROL_CHANNEL_ID}")
+            if message.channel.id != ADMIN_PANEL_CHANNEL_ID:
+                raise ValueError(f"استخدم هذا الأمر داخل روم الإدارة: {ADMIN_PANEL_CHANNEL_ID}")
             await update_panel_message(message.channel)
             await message.reply(embed=info_embed("تم", "تم تحديث لوحة التحكم.", COLOR_SUCCESS), delete_after=8)
             return
