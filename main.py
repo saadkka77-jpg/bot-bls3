@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -16,8 +17,15 @@ DATA_FILE = Path("economy_data.json")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
-ALLOWED_GUILD_ID = 1498037416672493829
-EVENT_CHANNEL_ID = 1498037576538259556
+# هذا الروم سيكون لوحة الإدارة + مكان نزول الأحداث
+CONTROL_CHANNEL_ID = 1498037416672493829
+
+# فقط هذه الرتب أو الأدمن يقدرون يستخدمون لوحة الإدارة
+ADMIN_ROLE_IDS = {
+    1478970736717598840,
+    1495873706923393205,
+    1490386915629989948,
+}
 
 START_MONEY = 3000
 INVEST_COOLDOWN = 180
@@ -25,17 +33,20 @@ TRADE_COOLDOWN = 180
 STEAL_COOLDOWN = 300
 DAILY_COOLDOWN = 86400
 ROULETTE_COOLDOWN = 600
+EVENT_DURATION_SECONDS = 300
 
-COLOR_PRIMARY = 0x2B2D31
+COLOR_PRIMARY = 0x1E2124
 COLOR_SUCCESS = 0x57F287
 COLOR_DANGER = 0xED4245
 COLOR_WARNING = 0xFEE75C
 COLOR_INFO = 0x5865F2
 COLOR_GOLD = 0xF1C40F
+COLOR_LAND = 0x3BA55D
 
 SHOP_ITEMS = {
     "ذهب": {"key": "gold", "buy_price": 1200, "sell_price": 850, "icon": "🥇"},
     "الماس": {"key": "diamonds", "buy_price": 2500, "sell_price": 1800, "icon": "💎"},
+    "ألماس": {"key": "diamonds", "buy_price": 2500, "sell_price": 1800, "icon": "💎"},
     "ارض": {"key": "lands", "buy_price": 6000, "sell_price": 4500, "icon": "🏝️"},
     "أرض": {"key": "lands", "buy_price": 6000, "sell_price": 4500, "icon": "🏝️"},
 }
@@ -44,7 +55,7 @@ EVENT_REWARD_TYPES = {
     "money": {"label": "فلوس", "key": "money", "icon": "💵", "color": COLOR_SUCCESS},
     "gold": {"label": "ذهب", "key": "gold", "icon": "🥇", "color": COLOR_GOLD},
     "diamonds": {"label": "ألماس", "key": "diamonds", "icon": "💎", "color": COLOR_INFO},
-    "lands": {"label": "أراضي", "key": "lands", "icon": "🏝️", "color": 0x3BA55D},
+    "lands": {"label": "أراضي", "key": "lands", "icon": "🏝️", "color": COLOR_LAND},
 }
 
 
@@ -60,6 +71,7 @@ intents.message_content = True
 intents.guilds = True
 intents.members = True
 bot = commands.Bot(command_prefix="", intents=intents, help_command=None)
+event_cleanup_task: asyncio.Task | None = None
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -85,22 +97,14 @@ def ensure_token() -> None:
 
 def load_data() -> dict[str, Any]:
     if not DATA_FILE.exists():
-        return {
-            "users": {},
-            "active_event": None,
-            "panel_message_id": None,
-        }
+        return {"users": {}, "active_event": None, "panel_message_id": None}
 
     try:
         with DATA_FILE.open("r", encoding="utf-8") as file:
             data = json.load(file)
     except Exception:
         logger.exception("Failed to load economy data file.")
-        return {
-            "users": {},
-            "active_event": None,
-            "panel_message_id": None,
-        }
+        return {"users": {}, "active_event": None, "panel_message_id": None}
 
     data.setdefault("users", {})
     data.setdefault("active_event", None)
@@ -144,12 +148,14 @@ def save_user(user: dict[str, Any]) -> None:
     save_data()
 
 
-def is_allowed_message(message: discord.Message) -> bool:
-    return message.guild is not None and message.guild.id == ALLOWED_GUILD_ID
+def has_admin_access(member: discord.Member) -> bool:
+    if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
+        return True
+    return any(role.id in ADMIN_ROLE_IDS for role in member.roles)
 
 
-def is_admin(member: discord.Member) -> bool:
-    return member.guild_permissions.administrator or member.guild_permissions.manage_guild
+def is_control_channel(channel: discord.abc.MessageableChannel) -> bool:
+    return isinstance(channel, discord.TextChannel) and channel.id == CONTROL_CHANNEL_ID
 
 
 def base_embed(color: int = COLOR_PRIMARY) -> discord.Embed:
@@ -158,16 +164,16 @@ def base_embed(color: int = COLOR_PRIMARY) -> discord.Embed:
     return embed
 
 
-def card_embed(title: str, value: str, color: int, icon: str) -> discord.Embed:
-    embed = base_embed(color)
-    embed.add_field(name=f"{icon} {title}", value=f"```{value}```", inline=False)
-    return embed
-
-
 def info_embed(title: str, description: str, color: int = COLOR_PRIMARY) -> discord.Embed:
     embed = base_embed(color)
     embed.title = title
     embed.description = description
+    return embed
+
+
+def card_embed(title: str, value: str, color: int, icon: str) -> discord.Embed:
+    embed = base_embed(color)
+    embed.add_field(name=f"{icon} {title}", value=f"```{value}```", inline=False)
     return embed
 
 
@@ -187,13 +193,36 @@ def dashboard_embed(user: dict[str, Any], member: discord.abc.User) -> discord.E
 def shop_embed() -> discord.Embed:
     embed = base_embed(COLOR_GOLD)
     embed.title = "المتجر"
-    lines = []
-    for name, item in SHOP_ITEMS.items():
-        if name != "أرض":
-            lines.append(
-                f"{item['icon']} {name}: شراء `{item['buy_price']}` | بيع `{item['sell_price']}`"
-            )
-    embed.description = "\n".join(lines)
+    embed.description = (
+        "🥇 ذهب: شراء `1200` | بيع `850`\n"
+        "💎 ألماس: شراء `2500` | بيع `1800`\n"
+        "🏝️ أرض: شراء `6000` | بيع `4500`"
+    )
+    return embed
+
+
+def admin_panel_embed() -> discord.Embed:
+    embed = base_embed(COLOR_INFO)
+    embed.title = "لوحة التحكم الخاصة"
+    embed.description = (
+        "لوحة مخصصة للإدارة والأدوار المصرح لها.\n"
+        "اضغط الزر المناسب ثم حدد الكمية وعدد الأشخاص.\n"
+        "الحدث ينزل في هذا الروم نفسه، ويستمر `5 دقائق` فقط ثم ينحذف تلقائيًا."
+    )
+    return embed
+
+
+def event_post_embed(event: dict[str, Any]) -> discord.Embed:
+    reward = EVENT_REWARD_TYPES[event["reward_type"]]
+    remaining_time = max(0, int(event["expires_at"] - time.time()))
+    embed = base_embed(reward["color"])
+    embed.title = "حدث خاص"
+    embed.description = (
+        f"{reward['icon']} الجائزة لكل شخص: `{event['amount']}` {reward['label']}\n"
+        f"🎟️ المقاعد المتبقية: `{event['remaining']}`\n"
+        f"⏳ الوقت المتبقي: `{format_wait(remaining_time)}`\n"
+        f"👤 المنشئ: `{event['creator_name']}`"
+    )
     return embed
 
 
@@ -232,7 +261,7 @@ def get_active_event() -> dict[str, Any] | None:
     event = data_store.get("active_event")
     if not event:
         return None
-    if event.get("remaining", 0) <= 0:
+    if event.get("expires_at", 0) <= time.time() or event.get("remaining", 0) <= 0:
         data_store["active_event"] = None
         save_data()
         return None
@@ -244,44 +273,67 @@ def set_active_event(event: dict[str, Any] | None) -> None:
     save_data()
 
 
-def event_post_embed(event: dict[str, Any], creator_name: str) -> discord.Embed:
-    reward = EVENT_REWARD_TYPES[event["reward_type"]]
-    embed = base_embed(reward["color"])
-    embed.title = "حدث خاص"
-    embed.description = (
-        f"{reward['icon']} الجائزة: `{event['amount']}` {reward['label']}\n"
-        f"🎟️ عدد المستفيدين المتبقي: `{event['remaining']}`\n"
-        f"🛡️ الحدث حصري ومنشور من الإدارة\n"
-        f"👤 بواسطة: `{creator_name}`"
-    )
-    return embed
+async def clear_active_event(reason: str = "انتهى الحدث.") -> None:
+    global event_cleanup_task
+
+    event = data_store.get("active_event")
+    if not event:
+        return
+
+    channel = bot.get_channel(event["channel_id"])
+    if isinstance(channel, discord.TextChannel):
+        try:
+            message = await channel.fetch_message(event["message_id"])
+            await message.delete()
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            logger.exception("Failed to delete event message.")
+
+        try:
+            await channel.send(embed=info_embed("انتهى الحدث", reason, COLOR_WARNING), delete_after=10)
+        except discord.HTTPException:
+            logger.exception("Failed to send event end message.")
+
+    set_active_event(None)
+    if event_cleanup_task and not event_cleanup_task.done():
+        event_cleanup_task.cancel()
+    event_cleanup_task = None
 
 
-def admin_panel_embed() -> discord.Embed:
-    embed = base_embed(COLOR_INFO)
-    embed.title = "لوحة الإدارة الخاصة"
-    embed.description = (
-        "استخدم الأزرار بالأسفل لإنشاء أحداث حصرية داخل هذا الروم.\n"
-        "كل زر يفتح نافذة تحدد فيها كمية الجائزة وعدد الأشخاص المسموح لهم بالاستلام."
-    )
-    return embed
+def schedule_event_cleanup() -> None:
+    global event_cleanup_task
+
+    event = get_active_event()
+    if not event:
+        return
+
+    if event_cleanup_task and not event_cleanup_task.done():
+        event_cleanup_task.cancel()
+
+    async def cleanup_after_delay() -> None:
+        delay = max(0, event["expires_at"] - time.time())
+        await asyncio.sleep(delay)
+        await clear_active_event("انتهت مدة الحدث وتم إغلاقه تلقائيًا.")
+
+    event_cleanup_task = asyncio.create_task(cleanup_after_delay())
 
 
 async def update_panel_message(channel: discord.TextChannel) -> None:
-    panel_view = AdminPanelView()
     panel_id = data_store.get("panel_message_id")
+    view = AdminPanelView()
 
     if panel_id:
         try:
             message = await channel.fetch_message(panel_id)
-            await message.edit(embed=admin_panel_embed(), view=panel_view)
+            await message.edit(embed=admin_panel_embed(), view=view)
             return
         except discord.NotFound:
             logger.info("Admin panel message not found, creating a new one.")
         except discord.HTTPException:
             logger.exception("Failed to update admin panel message.")
 
-    message = await channel.send(embed=admin_panel_embed(), view=panel_view)
+    message = await channel.send(embed=admin_panel_embed(), view=view)
     data_store["panel_message_id"] = message.id
     save_data()
 
@@ -292,18 +344,18 @@ class ClaimEventView(discord.ui.View):
 
     @discord.ui.button(label="استلام الحدث", style=discord.ButtonStyle.success, custom_id="claim_event")
     async def claim_event(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        if interaction.guild is None or interaction.guild.id != ALLOWED_GUILD_ID:
-            await interaction.response.send_message("هذا الزر غير متاح هنا.", ephemeral=True)
-            return
-
         event = get_active_event()
         if not event:
             await interaction.response.send_message("لا يوجد حدث نشط الآن.", ephemeral=True)
             return
 
+        if interaction.channel_id != event["channel_id"]:
+            await interaction.response.send_message("هذا الزر ليس لهذا الروم.", ephemeral=True)
+            return
+
         user_id = str(interaction.user.id)
         if user_id in event["claimed_by"]:
-            await interaction.response.send_message("أنت أخذت الحدث بالفعل.", ephemeral=True)
+            await interaction.response.send_message("أنت استلمت الحدث بالفعل.", ephemeral=True)
             return
 
         user = get_user(interaction.user.id)
@@ -313,35 +365,20 @@ class ClaimEventView(discord.ui.View):
         event["claimed_by"].append(user_id)
         event["remaining"] -= 1
 
+        reward = EVENT_REWARD_TYPES[event["reward_type"]]
+
         if event["remaining"] <= 0:
-            set_active_event(None)
-            await interaction.response.edit_message(
-                embed=info_embed("انتهى الحدث", "تم استلام جميع الجوائز.", COLOR_DANGER),
-                view=None,
-            )
-            await interaction.followup.send(
-                embed=card_embed(
-                    "استلمت جائزتك",
-                    f"{event['amount']} {EVENT_REWARD_TYPES[event['reward_type']]['label']}",
-                    EVENT_REWARD_TYPES[event["reward_type"]]["color"],
-                    EVENT_REWARD_TYPES[event["reward_type"]]["icon"],
-                ),
+            await interaction.response.send_message(
+                embed=card_embed("تم الاستلام", f"{event['amount']} {reward['label']}", reward["color"], reward["icon"]),
                 ephemeral=True,
             )
+            await clear_active_event("تم استلام جميع الجوائز وانتهى الحدث.")
             return
 
         set_active_event(event)
-        await interaction.response.edit_message(
-            embed=event_post_embed(event, event["creator_name"]),
-            view=ClaimEventView(),
-        )
+        await interaction.response.edit_message(embed=event_post_embed(event), view=ClaimEventView())
         await interaction.followup.send(
-            embed=card_embed(
-                "استلمت جائزتك",
-                f"{event['amount']} {EVENT_REWARD_TYPES[event['reward_type']]['label']}",
-                EVENT_REWARD_TYPES[event["reward_type"]]["color"],
-                EVENT_REWARD_TYPES[event["reward_type"]]["icon"],
-            ),
+            embed=card_embed("تم الاستلام", f"{event['amount']} {reward['label']}", reward["color"], reward["icon"]),
             ephemeral=True,
         )
 
@@ -365,13 +402,12 @@ class EventCreateModal(discord.ui.Modal):
         self.add_item(self.claim_limit)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        if not interaction.guild or interaction.guild.id != ALLOWED_GUILD_ID:
-            await interaction.response.send_message("هذا النموذج غير متاح هنا.", ephemeral=True)
+        if not isinstance(interaction.user, discord.Member) or not has_admin_access(interaction.user):
+            await interaction.response.send_message("هذه اللوحة مخصصة فقط للرتب المصرح لها.", ephemeral=True)
             return
 
-        member = interaction.user
-        if not isinstance(member, discord.Member) or not is_admin(member):
-            await interaction.response.send_message("هذه اللوحة للإدارة فقط.", ephemeral=True)
+        if interaction.channel_id != CONTROL_CHANNEL_ID:
+            await interaction.response.send_message("استخدم اللوحة داخل الروم المحدد فقط.", ephemeral=True)
             return
 
         try:
@@ -381,58 +417,67 @@ class EventCreateModal(discord.ui.Modal):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
 
+        old_event = get_active_event()
+        if old_event:
+            await clear_active_event("تم استبدال الحدث بحدث جديد.")
+
+        reward = EVENT_REWARD_TYPES[self.reward_type]
         event = {
             "reward_type": self.reward_type,
             "amount": amount,
             "remaining": limit,
             "claimed_by": [],
-            "creator_id": member.id,
-            "creator_name": str(member),
-            "created_at": int(time.time()),
+            "creator_name": str(interaction.user),
+            "channel_id": interaction.channel_id,
+            "message_id": 0,
+            "expires_at": time.time() + EVENT_DURATION_SECONDS,
         }
+
+        message = await interaction.channel.send(embed=event_post_embed(event), view=ClaimEventView())
+        event["message_id"] = message.id
         set_active_event(event)
+        schedule_event_cleanup()
 
-        channel = interaction.guild.get_channel(EVENT_CHANNEL_ID)
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message("ما قدرت أوصل لروم الأحداث.", ephemeral=True)
-            return
-
-        await channel.send(embed=event_post_embed(event, str(member)), view=ClaimEventView())
-        await interaction.response.send_message("تم نشر الحدث الخاص بنجاح.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=card_embed(
+                "تم إنشاء الحدث",
+                f"{amount} {reward['label']} لعدد {limit} أشخاص",
+                reward["color"],
+                reward["icon"],
+            ),
+            ephemeral=True,
+        )
 
 
 class AdminPanelView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
-    async def open_modal(
-        self, interaction: discord.Interaction, reward_type: str
-    ) -> None:
-        if not interaction.guild or interaction.guild.id != ALLOWED_GUILD_ID:
-            await interaction.response.send_message("هذا الزر غير متاح هنا.", ephemeral=True)
+    async def open_modal(self, interaction: discord.Interaction, reward_type: str) -> None:
+        if interaction.channel_id != CONTROL_CHANNEL_ID:
+            await interaction.response.send_message("هذه اللوحة تعمل في الروم المحدد فقط.", ephemeral=True)
             return
 
-        member = interaction.user
-        if not isinstance(member, discord.Member) or not is_admin(member):
-            await interaction.response.send_message("هذه اللوحة للإدارة فقط.", ephemeral=True)
+        if not isinstance(interaction.user, discord.Member) or not has_admin_access(interaction.user):
+            await interaction.response.send_message("هذه اللوحة مخصصة فقط للرتب المصرح لها.", ephemeral=True)
             return
 
         await interaction.response.send_modal(EventCreateModal(reward_type))
 
-    @discord.ui.button(label="توزيع فلوس", style=discord.ButtonStyle.success, custom_id="admin_money_event")
+    @discord.ui.button(label="حدث فلوس", style=discord.ButtonStyle.success, custom_id="panel_money")
     async def money_event(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.open_modal(interaction, "money")
 
-    @discord.ui.button(label="توزيع ذهب", style=discord.ButtonStyle.secondary, custom_id="admin_gold_event")
+    @discord.ui.button(label="حدث ذهب", style=discord.ButtonStyle.secondary, custom_id="panel_gold")
     async def gold_event(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.open_modal(interaction, "gold")
 
-    @discord.ui.button(label="توزيع ألماس", style=discord.ButtonStyle.primary, custom_id="admin_diamond_event")
-    async def diamond_event(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    @discord.ui.button(label="حدث ألماس", style=discord.ButtonStyle.primary, custom_id="panel_diamonds")
+    async def diamonds_event(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.open_modal(interaction, "diamonds")
 
-    @discord.ui.button(label="توزيع أراضي", style=discord.ButtonStyle.danger, custom_id="admin_land_event")
-    async def land_event(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    @discord.ui.button(label="حدث أراضي", style=discord.ButtonStyle.danger, custom_id="panel_lands")
+    async def lands_event(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.open_modal(interaction, "lands")
 
 
@@ -442,22 +487,19 @@ async def on_ready() -> None:
     bot.add_view(AdminPanelView())
     bot.add_view(ClaimEventView())
 
-    guild = bot.get_guild(ALLOWED_GUILD_ID)
-    if not guild:
-        logger.warning("Allowed guild not found.")
-        return
-
-    channel = guild.get_channel(EVENT_CHANNEL_ID)
+    channel = bot.get_channel(CONTROL_CHANNEL_ID)
     if isinstance(channel, discord.TextChannel):
         try:
             await update_panel_message(channel)
         except discord.HTTPException:
             logger.exception("Failed to ensure admin panel message.")
 
+    schedule_event_cleanup()
+
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
-    if message.author.bot or not is_allowed_message(message):
+    if message.author.bot or message.guild is None:
         return
 
     content = message.content.strip()
@@ -489,7 +531,7 @@ async def on_message(message: discord.Message) -> None:
                 "`شراء <العنصر> <الكمية>`\n"
                 "`بيع <العنصر> <الكمية/كل>`\n"
                 "`اوامر`\n"
-                "أوامر الإدارة: `لوحة الادارة` و `حدث <فلوس|ذهب|الماس|اراضي> <كمية> <عدد>`"
+                "أوامر الإدارة: `لوحة الادارة`"
             )
             await message.reply(embed=embed)
             return
@@ -502,11 +544,7 @@ async def on_message(message: discord.Message) -> None:
             left = cooldown_left(user["lastDaily"], DAILY_COOLDOWN)
             if left > 0:
                 await message.reply(
-                    embed=info_embed(
-                        "انتظر شوي",
-                        f"تقدر تستلم راتبك بعد `{format_wait(left)}`.",
-                        COLOR_WARNING,
-                    )
+                    embed=info_embed("انتظر شوي", f"تقدر تستلم راتبك بعد `{format_wait(left)}`.", COLOR_WARNING)
                 )
                 return
 
@@ -698,12 +736,7 @@ async def on_message(message: discord.Message) -> None:
             user[item["key"]] += quantity
             save_user(user)
             await message.reply(
-                embed=card_embed(
-                    "تم الشراء",
-                    f"{quantity} {args[1]} مقابل {total_price}",
-                    COLOR_SUCCESS,
-                    item["icon"],
-                )
+                embed=card_embed("تم الشراء", f"{quantity} {args[1]} مقابل {total_price}", COLOR_SUCCESS, item["icon"])
             )
             return
 
@@ -722,61 +755,17 @@ async def on_message(message: discord.Message) -> None:
             user["money"] += total_price
             save_user(user)
             await message.reply(
-                embed=card_embed(
-                    "تم البيع",
-                    f"{quantity} {args[1]} مقابل {total_price}",
-                    COLOR_WARNING,
-                    item["icon"],
-                )
+                embed=card_embed("تم البيع", f"{quantity} {args[1]} مقابل {total_price}", COLOR_WARNING, item["icon"])
             )
             return
 
         if cmd == "لوحة" and len(args) > 1 and args[1] == "الادارة":
-            if not isinstance(message.author, discord.Member) or not is_admin(message.author):
-                raise ValueError("هذا الأمر للإدارة فقط.")
-            if message.channel.id != EVENT_CHANNEL_ID:
-                raise ValueError(f"استخدم هذا الأمر داخل روم الإدارة: {EVENT_CHANNEL_ID}")
+            if not isinstance(message.author, discord.Member) or not has_admin_access(message.author):
+                raise ValueError("هذا الأمر فقط للرتب المصرح لها.")
+            if message.channel.id != CONTROL_CHANNEL_ID:
+                raise ValueError(f"استخدم هذا الأمر داخل الروم: {CONTROL_CHANNEL_ID}")
             await update_panel_message(message.channel)
-            await message.reply(embed=info_embed("تم", "تم تحديث لوحة الإدارة.", COLOR_SUCCESS))
-            return
-
-        if cmd == "حدث":
-            if not isinstance(message.author, discord.Member) or not is_admin(message.author):
-                raise ValueError("هذا الأمر للإدارة فقط.")
-            if len(args) < 4:
-                raise ValueError("اكتب: حدث <فلوس|ذهب|الماس|اراضي> <كمية> <عدد>")
-
-            type_map = {
-                "فلوس": "money",
-                "ذهب": "gold",
-                "الماس": "diamonds",
-                "ألماس": "diamonds",
-                "اراضي": "lands",
-                "أراضي": "lands",
-            }
-            reward_type = type_map.get(args[1])
-            if not reward_type:
-                raise ValueError("نوع الحدث غير معروف.")
-
-            amount = parse_amount(args[2])
-            limit = parse_amount(args[3])
-            event = {
-                "reward_type": reward_type,
-                "amount": amount,
-                "remaining": limit,
-                "claimed_by": [],
-                "creator_id": message.author.id,
-                "creator_name": str(message.author),
-                "created_at": int(time.time()),
-            }
-            set_active_event(event)
-
-            channel = message.guild.get_channel(EVENT_CHANNEL_ID)
-            if not isinstance(channel, discord.TextChannel):
-                raise ValueError("ما قدرت أوصل لروم الأحداث.")
-
-            await channel.send(embed=event_post_embed(event, str(message.author)), view=ClaimEventView())
-            await message.reply(embed=info_embed("تم", "تم نشر الحدث الخاص.", COLOR_SUCCESS))
+            await message.reply(embed=info_embed("تم", "تم تحديث لوحة التحكم.", COLOR_SUCCESS), delete_after=8)
             return
 
     except ValueError as exc:
@@ -784,9 +773,7 @@ async def on_message(message: discord.Message) -> None:
         return
     except Exception:
         logger.exception("Unexpected error while processing a message.")
-        await message.reply(
-            embed=info_embed("خطأ", "صار خطأ غير متوقع، حاول مرة ثانية.", COLOR_DANGER)
-        )
+        await message.reply(embed=info_embed("خطأ", "صار خطأ غير متوقع، حاول مرة ثانية.", COLOR_DANGER))
         return
 
 
