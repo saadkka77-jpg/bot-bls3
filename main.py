@@ -34,6 +34,8 @@ STEAL_COOLDOWN = 300
 DAILY_COOLDOWN = 86400
 ROULETTE_COOLDOWN = 600
 EVENT_DURATION_SECONDS = 300
+PROTECTION_COST = 10000
+PROTECTION_DURATION_SECONDS = 7200
 
 PRICE_AUTO_UPDATE_SECONDS = 3600
 AUCTION_INTERVAL_SECONDS = 1800
@@ -228,6 +230,7 @@ def create_user(user_id: int) -> dict[str, Any]:
         "lastSteal": 0,
         "lastDaily": 0,
         "lastRoulette": 0,
+        "protectionUntil": 0,
     }
 
 
@@ -241,6 +244,7 @@ def reset_user_data(user: dict[str, Any]) -> None:
     user["lastSteal"] = 0
     user["lastDaily"] = 0
     user["lastRoulette"] = 0
+    user["protectionUntil"] = 0
 
 
 def get_user(user_id: int) -> dict[str, Any]:
@@ -284,11 +288,14 @@ def card_embed(title: str, value: str, color: int, icon: str) -> discord.Embed:
 def dashboard_embed(user: dict[str, Any], member: discord.abc.User) -> discord.Embed:
     embed = base_embed(COLOR_INFO)
     embed.title = "لوحة ممتلكاتك"
+    protection_left = max(0, int(user.get("protectionUntil", 0) - time.time()))
+    protection_text = "لا توجد حماية" if protection_left <= 0 else f"مفعلة لمدة `{format_wait(protection_left)}`"
     embed.description = (
         f"💵 المال: `{user['money']}`\n"
         f"🥇 الذهب: `{user['gold']}`\n"
         f"💎 الألماس: `{user['diamonds']}`\n"
-        f"🏝️ الأراضي: `{user['lands']}`"
+        f"🏝️ الأراضي: `{user['lands']}`\n"
+        f"🛡️ الحماية: {protection_text}"
     )
     embed.set_author(name=str(member), icon_url=member.display_avatar.url)
     return embed
@@ -1211,6 +1218,18 @@ async def on_message(message: discord.Message) -> None:
     user = get_user(message.author.id)
 
     try:
+        if cmd == "لوحة" and len(args) > 1 and args[1] == "الادارة":
+            if not isinstance(message.author, discord.Member) or not has_admin_access(message.author):
+                raise ValueError("هذا الأمر فقط للرتب المصرح لها.")
+            if message.channel.id != ADMIN_PANEL_CHANNEL_ID:
+                raise ValueError(f"استخدم هذا الأمر داخل روم الإدارة: {ADMIN_PANEL_CHANNEL_ID}")
+            await refresh_admin_room_panels()
+            await message.reply(embed=info_embed("تم", "تم تحديث لوحات الإدارة والأسعار.", COLOR_SUCCESS), delete_after=8)
+            return
+
+        if message.channel.id != EVENT_PUBLIC_CHANNEL_ID:
+            return
+
         if cmd in {"ممتلكاتي", "رصيدي", "فلوسي"}:
             await message.reply(embed=dashboard_embed(user, message.author))
             return
@@ -1224,6 +1243,7 @@ async def on_message(message: discord.Message) -> None:
                 "`استثمار <مبلغ/كل>`\n"
                 "`تداول <مبلغ/كل>`\n"
                 "`روليت`\n"
+                "`حماية`\n"
                 "`تحويل @شخص <مبلغ>`\n"
                 "`سرقة @شخص`\n"
                 "`توب`\n"
@@ -1256,6 +1276,23 @@ async def on_message(message: discord.Message) -> None:
             user["lastDaily"] = time.time()
             save_user(user)
             await message.reply(embed=card_embed("راتبك", str(salary), COLOR_WARNING, "💰"))
+            return
+
+        if cmd == "حماية":
+            if user["money"] < PROTECTION_COST:
+                raise ValueError(f"تحتاج `{PROTECTION_COST}` لتفعيل الحماية.")
+
+            user["money"] -= PROTECTION_COST
+            start_from = max(time.time(), float(user.get("protectionUntil", 0)))
+            user["protectionUntil"] = start_from + PROTECTION_DURATION_SECONDS
+            save_user(user)
+            await message.reply(
+                embed=info_embed(
+                    "تم تفعيل الحماية",
+                    f"تم خصم `{PROTECTION_COST}` وتفعيل الحماية لمدة `ساعتين`.\nتنتهي بعد `{format_wait(int(user['protectionUntil'] - time.time()))}`.",
+                    COLOR_SUCCESS,
+                )
+            )
             return
 
         if cmd == "استثمار":
@@ -1386,6 +1423,10 @@ async def on_message(message: discord.Message) -> None:
             if victim["money"] <= 0:
                 raise ValueError("الهدف ما عنده فلوس.")
 
+            protection_left = max(0, int(victim.get("protectionUntil", 0) - time.time()))
+            if protection_left > 0:
+                raise ValueError(f"الهدف عليه حماية، باقي `{format_wait(protection_left)}`.")
+
             stolen = random.randint(1, max(1, min(victim["money"], 1200)))
             victim["money"] -= stolen
             user["money"] += stolen
@@ -1450,15 +1491,6 @@ async def on_message(message: discord.Message) -> None:
             await message.reply(
                 embed=card_embed("تم البيع", f"{quantity} {item['label']} مقابل {total_price}", COLOR_WARNING, item["icon"])
             )
-            return
-
-        if cmd == "لوحة" and len(args) > 1 and args[1] == "الادارة":
-            if not isinstance(message.author, discord.Member) or not has_admin_access(message.author):
-                raise ValueError("هذا الأمر فقط للرتب المصرح لها.")
-            if message.channel.id != ADMIN_PANEL_CHANNEL_ID:
-                raise ValueError(f"استخدم هذا الأمر داخل روم الإدارة: {ADMIN_PANEL_CHANNEL_ID}")
-            await refresh_admin_room_panels()
-            await message.reply(embed=info_embed("تم", "تم تحديث لوحات الإدارة والأسعار.", COLOR_SUCCESS), delete_after=8)
             return
 
     except ValueError as exc:
