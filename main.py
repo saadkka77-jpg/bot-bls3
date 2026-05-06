@@ -138,6 +138,18 @@ def create_user(user_id: int) -> dict[str, Any]:
     }
 
 
+def reset_user_data(user: dict[str, Any]) -> None:
+    user["money"] = 0
+    user["gold"] = 0
+    user["diamonds"] = 0
+    user["lands"] = 0
+    user["lastInvest"] = 0
+    user["lastTrade"] = 0
+    user["lastSteal"] = 0
+    user["lastDaily"] = 0
+    user["lastRoulette"] = 0
+
+
 def get_user(user_id: int) -> dict[str, Any]:
     key = str(user_id)
     if key not in data_store["users"]:
@@ -206,7 +218,8 @@ def admin_panel_embed() -> discord.Embed:
     embed.description = (
         "هذه اللوحة خاصة بالإدارة فقط.\n"
         f"الأحداث ستُنشر تلقائيًا في روم الأعضاء: `{EVENT_PUBLIC_CHANNEL_ID}`\n"
-        "كل حدث يستمر `5 دقائق` ثم يُحذف تلقائيًا."
+        "كل حدث يستمر `5 دقائق` ثم يُحذف تلقائيًا.\n"
+        "يوجد أيضًا زر لتصفير بيانات الاقتصاد بالكامل مع تأكيد قبل التنفيذ."
     )
     return embed
 
@@ -298,6 +311,18 @@ async def clear_active_event(reason: str = "انتهى الحدث.") -> None:
     if event_cleanup_task and not event_cleanup_task.done():
         event_cleanup_task.cancel()
     event_cleanup_task = None
+
+
+async def reset_economy_data() -> int:
+    users = data_store.get("users", {})
+    reset_count = len(users)
+
+    for user in users.values():
+        reset_user_data(user)
+
+    save_data()
+    await clear_active_event("تم تصفير الاقتصاد بالكامل وإغلاق الحدث الحالي.")
+    return reset_count
 
 
 def schedule_event_cleanup() -> None:
@@ -452,6 +477,51 @@ class EventCreateModal(discord.ui.Modal):
         )
 
 
+class ResetConfirmView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=60)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.channel_id != ADMIN_PANEL_CHANNEL_ID:
+            await interaction.response.send_message("استخدم هذه اللوحة داخل روم الإدارة فقط.", ephemeral=True)
+            return False
+
+        if not isinstance(interaction.user, discord.Member) or not has_admin_access(interaction.user):
+            await interaction.response.send_message("هذه اللوحة مخصصة فقط للرتب المصرح لها.", ephemeral=True)
+            return False
+
+        return True
+
+    @discord.ui.button(label="نعم", style=discord.ButtonStyle.danger, custom_id="confirm_reset_yes")
+    async def confirm_yes(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        reset_count = await reset_economy_data()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            embed=info_embed(
+                "تم التصفير",
+                f"تم تصفير فلوس وممتلكات وعدادات عدد `{reset_count}` مستخدم، وإغلاق أي حدث نشط.",
+                COLOR_DANGER,
+            ),
+            view=self,
+        )
+        self.stop()
+
+    @discord.ui.button(label="لا", style=discord.ButtonStyle.secondary, custom_id="confirm_reset_no")
+    async def confirm_no(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            embed=info_embed("تم الإلغاء", "تم إلغاء عملية تصفير الاقتصاد.", COLOR_WARNING),
+            view=self,
+        )
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+
 class AdminPanelView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -482,6 +552,26 @@ class AdminPanelView(discord.ui.View):
     @discord.ui.button(label="حدث أراضي", style=discord.ButtonStyle.danger, custom_id="panel_lands")
     async def lands_event(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.open_modal(interaction, "lands")
+
+    @discord.ui.button(label="تصفير الاقتصاد", style=discord.ButtonStyle.danger, custom_id="panel_reset_economy", row=1)
+    async def reset_economy(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if interaction.channel_id != ADMIN_PANEL_CHANNEL_ID:
+            await interaction.response.send_message("هذه اللوحة تعمل فقط في روم الإدارة.", ephemeral=True)
+            return
+
+        if not isinstance(interaction.user, discord.Member) or not has_admin_access(interaction.user):
+            await interaction.response.send_message("هذه اللوحة مخصصة فقط للرتب المصرح لها.", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            embed=info_embed(
+                "تأكيد التصفير",
+                "هل أنت متأكد؟ سيتم تصفير كل الفلوس والممتلكات والعدادات لجميع المستخدمين.",
+                COLOR_DANGER,
+            ),
+            view=ResetConfirmView(),
+            ephemeral=True,
+        )
 
 
 @bot.event
