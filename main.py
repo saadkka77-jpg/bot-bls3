@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import random
 import threading
@@ -17,12 +18,9 @@ DATA_FILE = Path("economy_data.json")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
-# روم لوحة الإدارة فقط
 ADMIN_PANEL_CHANNEL_ID = 1498037576538259556
-# روم نزول الأحداث العامة
 EVENT_PUBLIC_CHANNEL_ID = 1498037416672493829
 
-# الرتب المسموح لها باستخدام لوحة الإدارة
 ADMIN_ROLE_IDS = {
     1478970736717598840,
     1495873706923393205,
@@ -37,6 +35,12 @@ DAILY_COOLDOWN = 86400
 ROULETTE_COOLDOWN = 600
 EVENT_DURATION_SECONDS = 300
 
+PRICE_AUTO_UPDATE_SECONDS = 3600
+AUCTION_INTERVAL_SECONDS = 1800
+AUCTION_DURATION_SECONDS = 300
+AUCTION_COUNTDOWN_SECONDS = 5
+AUCTION_BID_CONFIRM_DELETE_AFTER = 60
+
 COLOR_PRIMARY = 0x1E2124
 COLOR_SUCCESS = 0x57F287
 COLOR_DANGER = 0xED4245
@@ -45,12 +49,50 @@ COLOR_INFO = 0x5865F2
 COLOR_GOLD = 0xF1C40F
 COLOR_LAND = 0x3BA55D
 
-SHOP_ITEMS = {
-    "ذهب": {"key": "gold", "buy_price": 1200, "sell_price": 850, "icon": "🥇"},
-    "الماس": {"key": "diamonds", "buy_price": 2500, "sell_price": 1800, "icon": "💎"},
-    "ألماس": {"key": "diamonds", "buy_price": 2500, "sell_price": 1800, "icon": "💎"},
-    "ارض": {"key": "lands", "buy_price": 6000, "sell_price": 4500, "icon": "🏝️"},
-    "أرض": {"key": "lands", "buy_price": 6000, "sell_price": 4500, "icon": "🏝️"},
+ITEM_DEFINITIONS = {
+    "gold": {
+        "label": "ذهب",
+        "icon": "🥇",
+        "base_buy": 1200,
+        "base_sell": 850,
+        "min_buy": 500,
+        "step": 100,
+        "auction_quantity": 3,
+        "color": COLOR_GOLD,
+    },
+    "diamonds": {
+        "label": "ألماس",
+        "icon": "💎",
+        "base_buy": 2500,
+        "base_sell": 1800,
+        "min_buy": 1000,
+        "step": 200,
+        "auction_quantity": 2,
+        "color": COLOR_INFO,
+    },
+    "lands": {
+        "label": "أرض",
+        "icon": "🏝️",
+        "base_buy": 6000,
+        "base_sell": 4500,
+        "min_buy": 2500,
+        "step": 500,
+        "auction_quantity": 1,
+        "color": COLOR_LAND,
+    },
+}
+
+ITEM_ALIASES = {
+    "ذهب": "gold",
+    "gold": "gold",
+    "الماس": "diamonds",
+    "ألماس": "diamonds",
+    "diamond": "diamonds",
+    "diamonds": "diamonds",
+    "ارض": "lands",
+    "أرض": "lands",
+    "land": "lands",
+    "lands": "lands",
 }
 
 EVENT_REWARD_TYPES = {
@@ -75,6 +117,8 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="", intents=intents, help_command=None)
 event_cleanup_task: asyncio.Task | None = None
+background_task: asyncio.Task | None = None
+views_registered = False
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -98,20 +142,50 @@ def ensure_token() -> None:
         raise RuntimeError("DISCORD_TOKEN is missing in environment variables.")
 
 
+def build_default_prices() -> dict[str, dict[str, int]]:
+    prices: dict[str, dict[str, int]] = {}
+    for key, item in ITEM_DEFINITIONS.items():
+        prices[key] = {
+            "buy_price": item["base_buy"],
+            "sell_price": item["base_sell"],
+        }
+    return prices
+
+
+def next_auction_timestamp() -> int:
+    return int(time.time()) + AUCTION_INTERVAL_SECONDS
+
+
 def load_data() -> dict[str, Any]:
+    defaults = {
+        "users": {},
+        "active_event": None,
+        "panel_message_id": None,
+        "price_panel_message_id": None,
+        "prices": build_default_prices(),
+        "last_price_update": 0,
+        "active_auction": None,
+        "next_auction_at": next_auction_timestamp(),
+    }
+
     if not DATA_FILE.exists():
-        return {"users": {}, "active_event": None, "panel_message_id": None}
+        return defaults
 
     try:
         with DATA_FILE.open("r", encoding="utf-8") as file:
             data = json.load(file)
     except Exception:
         logger.exception("Failed to load economy data file.")
-        return {"users": {}, "active_event": None, "panel_message_id": None}
+        return defaults
 
-    data.setdefault("users", {})
-    data.setdefault("active_event", None)
-    data.setdefault("panel_message_id", None)
+    for key, value in defaults.items():
+        data.setdefault(key, value)
+
+    for item_key, item_prices in build_default_prices().items():
+        existing = data["prices"].setdefault(item_key, item_prices)
+        existing.setdefault("buy_price", item_prices["buy_price"])
+        existing.setdefault("sell_price", item_prices["sell_price"])
+
     return data
 
 
@@ -121,6 +195,25 @@ def save_data() -> None:
 
 
 data_store = load_data()
+
+
+def ensure_state() -> None:
+    data_store.setdefault("users", {})
+    data_store.setdefault("active_event", None)
+    data_store.setdefault("panel_message_id", None)
+    data_store.setdefault("price_panel_message_id", None)
+    data_store.setdefault("prices", build_default_prices())
+    data_store.setdefault("last_price_update", 0)
+    data_store.setdefault("active_auction", None)
+    data_store.setdefault("next_auction_at", next_auction_timestamp())
+
+    for item_key, item_prices in build_default_prices().items():
+        current = data_store["prices"].setdefault(item_key, item_prices)
+        current.setdefault("buy_price", item_prices["buy_price"])
+        current.setdefault("sell_price", item_prices["sell_price"])
+
+
+ensure_state()
 
 
 def create_user(user_id: int) -> dict[str, Any]:
@@ -139,7 +232,7 @@ def create_user(user_id: int) -> dict[str, Any]:
 
 
 def reset_user_data(user: dict[str, Any]) -> None:
-    user["money"] = 0
+    user["money"] = START_MONEY
     user["gold"] = 0
     user["diamonds"] = 0
     user["lands"] = 0
@@ -201,25 +294,46 @@ def dashboard_embed(user: dict[str, Any], member: discord.abc.User) -> discord.E
     return embed
 
 
+def get_price(item_key: str) -> dict[str, int]:
+    return data_store["prices"][item_key]
+
+
+def format_prices_lines() -> str:
+    lines = []
+    for item_key in ("gold", "diamonds", "lands"):
+        item = ITEM_DEFINITIONS[item_key]
+        price = get_price(item_key)
+        lines.append(
+            f"{item['icon']} {item['label']}: شراء `{price['buy_price']}` | بيع `{price['sell_price']}`"
+        )
+    return "\n".join(lines)
+
+
 def shop_embed() -> discord.Embed:
     embed = base_embed(COLOR_GOLD)
     embed.title = "المتجر"
-    embed.description = (
-        "🥇 ذهب: شراء `1200` | بيع `850`\n"
-        "💎 ألماس: شراء `2500` | بيع `1800`\n"
-        "🏝️ أرض: شراء `6000` | بيع `4500`"
-    )
+    embed.description = format_prices_lines()
     return embed
 
 
 def admin_panel_embed() -> discord.Embed:
     embed = base_embed(COLOR_INFO)
-    embed.title = "لوحة التحكم الخاصة"
+    embed.title = "لوحة الإدارة"
     embed.description = (
         "هذه اللوحة خاصة بالإدارة فقط.\n"
-        f"الأحداث ستُنشر تلقائيًا في روم الأعضاء: `{EVENT_PUBLIC_CHANNEL_ID}`\n"
-        "كل حدث يستمر `5 دقائق` ثم يُحذف تلقائيًا.\n"
-        "يوجد أيضًا زر لتصفير بيانات الاقتصاد بالكامل مع تأكيد قبل التنفيذ."
+        f"الأحداث والمزادات تنزل في روم الأعضاء: `{EVENT_PUBLIC_CHANNEL_ID}`\n"
+        "كل حدث مدته `5 دقائق`.\n"
+        "يوجد زر لتصفير الاقتصاد مع رسالة تأكيد قبل التنفيذ."
+    )
+    return embed
+
+
+def price_panel_embed() -> discord.Embed:
+    embed = base_embed(COLOR_GOLD)
+    embed.title = "لوحة التحكم بالأسعار"
+    embed.description = (
+        f"{format_prices_lines()}\n\n"
+        "الأسعار تتحرك تلقائيًا كل ساعة بشكل عشوائي، وتقدر تعدلها يدويًا من الأزرار."
     )
     return embed
 
@@ -243,7 +357,7 @@ def cooldown_left(last_time: float, cooldown: int) -> int:
 
 
 def format_wait(seconds: int) -> str:
-    minutes, secs = divmod(seconds, 60)
+    minutes, secs = divmod(max(0, seconds), 60)
     if minutes:
         return f"{minutes} دقيقة و {secs} ثانية"
     return f"{secs} ثانية"
@@ -258,15 +372,65 @@ def parse_amount(raw: str) -> int:
     return amount
 
 
-def parse_buy_sell_item(raw_name: str) -> dict[str, Any]:
-    item = SHOP_ITEMS.get(raw_name)
-    if not item:
+def parse_item_key(raw_name: str) -> str:
+    item_key = ITEM_ALIASES.get(raw_name)
+    if not item_key:
         raise ValueError("العنصر غير معروف. استخدم: ذهب، الماس، ارض.")
-    return item
+    return item_key
+
+
+def parse_buy_sell_item(raw_name: str) -> dict[str, Any]:
+    item_key = parse_item_key(raw_name)
+    item = ITEM_DEFINITIONS[item_key]
+    prices = get_price(item_key)
+    return {
+        "key": item_key,
+        "label": item["label"],
+        "icon": item["icon"],
+        "buy_price": prices["buy_price"],
+        "sell_price": prices["sell_price"],
+    }
 
 
 def add_asset(user: dict[str, Any], key: str, amount: int) -> None:
     user[key] += amount
+
+
+def recalculate_sell_price(item_key: str, buy_price: int) -> int:
+    item = ITEM_DEFINITIONS[item_key]
+    ratio = item["base_sell"] / item["base_buy"]
+    step = max(50, item["step"] // 2)
+    sell_price = int(round((buy_price * ratio) / step) * step)
+    return max(step, sell_price)
+
+
+def adjust_price(item_key: str, direction: int, auto: bool = False) -> tuple[int, int]:
+    item = ITEM_DEFINITIONS[item_key]
+    current = get_price(item_key)
+    current_buy = current["buy_price"]
+
+    if auto:
+        multiplier = 1 + random.uniform(-0.15, 0.15)
+        new_buy = int(round((current_buy * multiplier) / item["step"]) * item["step"])
+        if new_buy == current_buy:
+            new_buy = current_buy + random.choice((-item["step"], item["step"]))
+    else:
+        new_buy = current_buy + (item["step"] * direction)
+
+    new_buy = max(item["min_buy"], new_buy)
+    new_sell = recalculate_sell_price(item_key, new_buy)
+    current["buy_price"] = new_buy
+    current["sell_price"] = new_sell
+    return new_buy, new_sell
+
+
+def estimate_user_total_value(user: dict[str, Any]) -> int:
+    return (
+        user["money"]
+        + user["gold"] * get_price("gold")["sell_price"]
+        + user["diamonds"] * get_price("diamonds")["sell_price"]
+        + user["lands"] * get_price("lands")["sell_price"]
+    )
 
 
 def get_active_event() -> dict[str, Any] | None:
@@ -321,7 +485,7 @@ async def reset_economy_data() -> int:
         reset_user_data(user)
 
     save_data()
-    await clear_active_event("تم تصفير الاقتصاد بالكامل وإغلاق الحدث الحالي.")
+    await clear_active_event("تم تصفير الاقتصاد وإرجاع كل لاعب إلى 3000 وإغلاق الحدث الحالي.")
     return reset_count
 
 
@@ -360,6 +524,290 @@ async def update_panel_message(channel: discord.TextChannel) -> None:
     message = await channel.send(embed=admin_panel_embed(), view=view)
     data_store["panel_message_id"] = message.id
     save_data()
+
+
+async def update_price_panel_message(channel: discord.TextChannel) -> None:
+    panel_id = data_store.get("price_panel_message_id")
+    view = PriceControlView()
+
+    if panel_id:
+        try:
+            message = await channel.fetch_message(panel_id)
+            await message.edit(embed=price_panel_embed(), view=view)
+            return
+        except discord.NotFound:
+            logger.info("Price panel message not found, creating a new one.")
+        except discord.HTTPException:
+            logger.exception("Failed to update price panel message.")
+
+    message = await channel.send(embed=price_panel_embed(), view=view)
+    data_store["price_panel_message_id"] = message.id
+    save_data()
+
+
+async def refresh_admin_room_panels() -> None:
+    channel = bot.get_channel(ADMIN_PANEL_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    try:
+        await update_panel_message(channel)
+        await update_price_panel_message(channel)
+    except discord.HTTPException:
+        logger.exception("Failed to refresh admin room panels.")
+
+
+def get_active_auction() -> dict[str, Any] | None:
+    auction = data_store.get("active_auction")
+    if not auction:
+        return None
+    return auction
+
+
+def set_active_auction(auction: dict[str, Any] | None) -> None:
+    data_store["active_auction"] = auction
+    save_data()
+
+
+def auction_embed(auction: dict[str, Any]) -> discord.Embed:
+    item = ITEM_DEFINITIONS[auction["item_key"]]
+    embed = base_embed(item["color"])
+    embed.title = "مزاد جديد"
+
+    if auction["state"] == "countdown":
+        remaining = max(0, int(math.ceil(auction["countdown_end_at"] - time.time())))
+        timer_line = f"⏳ العد النهائي: `{remaining}`"
+        status_line = "الحالة: الإغلاق النهائي"
+    else:
+        remaining = max(0, int(auction["expires_at"] - time.time()))
+        timer_line = f"⏳ الوقت المتبقي: `{format_wait(remaining)}`"
+        status_line = "الحالة: مفتوح"
+
+    if auction["current_bid"] > 0:
+        top_bid_line = f"💰 أعلى مزايدة: `{auction['current_bid']}`"
+        top_user_line = f"👑 أعلى مزايد: <@{auction['current_winner_id']}>"
+    else:
+        top_bid_line = f"💰 السعر المطروح: `{auction['starting_bid']}`"
+        top_user_line = "👑 أعلى مزايد: لا يوجد حتى الآن"
+
+    embed.description = (
+        f"{item['icon']} العنصر: `{item['label']}`\n"
+        f"📦 الكمية: `{auction['quantity']}`\n"
+        f"{top_bid_line}\n"
+        f"{top_user_line}\n"
+        f"{timer_line}\n"
+        f"{status_line}"
+    )
+    return embed
+
+
+async def update_auction_message() -> None:
+    auction = get_active_auction()
+    if not auction:
+        return
+
+    channel = bot.get_channel(auction["channel_id"])
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    try:
+        message = await channel.fetch_message(auction["message_id"])
+        await message.edit(embed=auction_embed(auction), view=AuctionBidView())
+    except discord.NotFound:
+        pass
+    except discord.HTTPException:
+        logger.exception("Failed to update auction message.")
+
+
+def upsert_bid_history(auction: dict[str, Any], user_id: int, amount: int, user_name: str) -> None:
+    bids = auction.setdefault("bid_history", [])
+    filtered = [bid for bid in bids if bid["user_id"] != user_id]
+    filtered.append(
+        {
+            "user_id": user_id,
+            "amount": amount,
+            "user_name": user_name,
+            "timestamp": time.time(),
+        }
+    )
+    filtered.sort(key=lambda bid: (bid["amount"], bid["timestamp"]), reverse=True)
+    auction["bid_history"] = filtered
+
+
+def get_best_valid_bid(auction: dict[str, Any]) -> dict[str, Any] | None:
+    for bid in sorted(
+        auction.get("bid_history", []),
+        key=lambda entry: (entry["amount"], entry["timestamp"]),
+        reverse=True,
+    ):
+        user = get_user(bid["user_id"])
+        if user["money"] >= bid["amount"]:
+            return bid
+    return None
+
+
+async def create_auction() -> None:
+    if get_active_auction():
+        return
+
+    channel = bot.get_channel(EVENT_PUBLIC_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    item_key = random.choice(["gold", "diamonds", "lands"])
+    item = ITEM_DEFINITIONS[item_key]
+    current_buy = get_price(item_key)["buy_price"]
+    quantity = item["auction_quantity"]
+    starting_bid = max(item["step"], int(round((current_buy * quantity * 0.6) / item["step"]) * item["step"]))
+
+    auction = {
+        "item_key": item_key,
+        "quantity": quantity,
+        "starting_bid": starting_bid,
+        "current_bid": 0,
+        "current_winner_id": None,
+        "channel_id": channel.id,
+        "message_id": 0,
+        "expires_at": time.time() + AUCTION_DURATION_SECONDS,
+        "state": "running",
+        "countdown_end_at": 0,
+        "last_countdown_value": 0,
+        "bid_history": [],
+    }
+
+    message = await channel.send(embed=auction_embed(auction), view=AuctionBidView())
+    auction["message_id"] = message.id
+    set_active_auction(auction)
+    data_store["next_auction_at"] = next_auction_timestamp()
+    save_data()
+
+
+async def finish_auction_without_winner(reason: str) -> None:
+    auction = get_active_auction()
+    if not auction:
+        return
+
+    channel = bot.get_channel(auction["channel_id"])
+    if isinstance(channel, discord.TextChannel):
+        try:
+            message = await channel.fetch_message(auction["message_id"])
+            await message.edit(embed=info_embed("انتهى المزاد", reason, COLOR_WARNING), view=None)
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            logger.exception("Failed to finish auction message.")
+
+    set_active_auction(None)
+
+
+async def finish_auction_with_winner() -> None:
+    auction = get_active_auction()
+    if not auction:
+        return
+
+    best_bid = get_best_valid_bid(auction)
+    channel = bot.get_channel(auction["channel_id"])
+    if not isinstance(channel, discord.TextChannel):
+        set_active_auction(None)
+        return
+
+    if not best_bid:
+        await finish_auction_without_winner("انتهى المزاد لكن لا يوجد مزايد يملك المبلغ حاليًا.")
+        return
+
+    winner = get_user(best_bid["user_id"])
+    item = ITEM_DEFINITIONS[auction["item_key"]]
+    winner["money"] -= best_bid["amount"]
+    winner[auction["item_key"]] += auction["quantity"]
+    save_user(winner)
+
+    result_embed = base_embed(COLOR_SUCCESS)
+    result_embed.title = "انتهى المزاد"
+    result_embed.description = (
+        f"🏆 الفائز: <@{best_bid['user_id']}>\n"
+        f"{item['icon']} الجائزة: `{auction['quantity']}` {item['label']}\n"
+        f"💰 السعر النهائي: `{best_bid['amount']}`"
+    )
+
+    try:
+        message = await channel.fetch_message(auction["message_id"])
+        await message.edit(embed=result_embed, view=None)
+    except discord.NotFound:
+        pass
+    except discord.HTTPException:
+        logger.exception("Failed to update final auction message.")
+
+    set_active_auction(None)
+
+
+async def run_auction_countdown_step(auction: dict[str, Any]) -> None:
+    remaining = max(0, int(math.ceil(auction["countdown_end_at"] - time.time())))
+    if remaining <= 0:
+        await finish_auction_with_winner()
+        return
+
+    if remaining != auction.get("last_countdown_value"):
+        auction["last_countdown_value"] = remaining
+        save_data()
+        channel = bot.get_channel(auction["channel_id"])
+        if isinstance(channel, discord.TextChannel):
+            try:
+                await channel.send(f"⏳ ينتهي المزاد خلال `{remaining}`", delete_after=2)
+            except discord.HTTPException:
+                logger.exception("Failed to send auction countdown message.")
+        await update_auction_message()
+
+
+async def tick_auction_system() -> None:
+    auction = get_active_auction()
+    if not auction:
+        if time.time() >= data_store.get("next_auction_at", 0):
+            await create_auction()
+        return
+
+    if auction["state"] == "running":
+        if time.time() >= auction["expires_at"]:
+            if auction["current_bid"] <= 0:
+                await finish_auction_without_winner("انتهت مدة المزاد بدون أي مزايدة.")
+                return
+
+            auction["state"] = "countdown"
+            auction["countdown_end_at"] = time.time() + AUCTION_COUNTDOWN_SECONDS
+            auction["last_countdown_value"] = 0
+            save_data()
+            await update_auction_message()
+            await run_auction_countdown_step(auction)
+    elif auction["state"] == "countdown":
+        await run_auction_countdown_step(auction)
+
+
+async def maybe_auto_update_prices() -> None:
+    now = time.time()
+    last_update = data_store.get("last_price_update", 0)
+    if last_update <= 0:
+        data_store["last_price_update"] = now
+        save_data()
+        return
+    if now - last_update < PRICE_AUTO_UPDATE_SECONDS:
+        return
+
+    for item_key in ITEM_DEFINITIONS:
+        adjust_price(item_key, 0, auto=True)
+
+    data_store["last_price_update"] = now
+    save_data()
+    await refresh_admin_room_panels()
+
+
+async def background_loop() -> None:
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            await maybe_auto_update_prices()
+            await tick_auction_system()
+        except Exception:
+            logger.exception("Background loop crashed.")
+        await asyncio.sleep(1)
 
 
 class ClaimEventView(discord.ui.View):
@@ -500,7 +948,7 @@ class ResetConfirmView(discord.ui.View):
         await interaction.response.edit_message(
             embed=info_embed(
                 "تم التصفير",
-                f"تم تصفير فلوس وممتلكات وعدادات عدد `{reset_count}` مستخدم، وإغلاق أي حدث نشط.",
+                f"تم تصفير الاقتصاد وإرجاع عدد `{reset_count}` مستخدم إلى `{START_MONEY}` مع حذف كل الممتلكات.",
                 COLOR_DANGER,
             ),
             view=self,
@@ -520,6 +968,147 @@ class ResetConfirmView(discord.ui.View):
     async def on_timeout(self) -> None:
         for child in self.children:
             child.disabled = True
+
+
+class PriceControlView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.channel_id != ADMIN_PANEL_CHANNEL_ID:
+            await interaction.response.send_message("هذه اللوحة تعمل فقط في روم الإدارة.", ephemeral=True)
+            return False
+
+        if not isinstance(interaction.user, discord.Member) or not has_admin_access(interaction.user):
+            await interaction.response.send_message("هذه اللوحة مخصصة فقط للرتب المصرح لها.", ephemeral=True)
+            return False
+
+        return True
+
+    async def update_price(self, interaction: discord.Interaction, item_key: str, direction: int) -> None:
+        new_buy, new_sell = adjust_price(item_key, direction, auto=False)
+        save_data()
+        await refresh_admin_room_panels()
+        item = ITEM_DEFINITIONS[item_key]
+        action = "رفع" if direction > 0 else "تنزيل"
+        await interaction.response.send_message(
+            embed=info_embed(
+                "تم تحديث السعر",
+                f"تم {action} سعر {item['label']} إلى شراء `{new_buy}` وبيع `{new_sell}`.",
+                COLOR_SUCCESS,
+            ),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="رفع الذهب", style=discord.ButtonStyle.success, custom_id="price_gold_up")
+    async def price_gold_up(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.update_price(interaction, "gold", 1)
+
+    @discord.ui.button(label="تنزيل الذهب", style=discord.ButtonStyle.secondary, custom_id="price_gold_down")
+    async def price_gold_down(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.update_price(interaction, "gold", -1)
+
+    @discord.ui.button(label="رفع الألماس", style=discord.ButtonStyle.success, custom_id="price_diamonds_up")
+    async def price_diamonds_up(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.update_price(interaction, "diamonds", 1)
+
+    @discord.ui.button(label="تنزيل الألماس", style=discord.ButtonStyle.secondary, custom_id="price_diamonds_down")
+    async def price_diamonds_down(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.update_price(interaction, "diamonds", -1)
+
+    @discord.ui.button(label="رفع الأرض", style=discord.ButtonStyle.success, custom_id="price_lands_up", row=1)
+    async def price_lands_up(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.update_price(interaction, "lands", 1)
+
+    @discord.ui.button(label="تنزيل الأرض", style=discord.ButtonStyle.secondary, custom_id="price_lands_down", row=1)
+    async def price_lands_down(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.update_price(interaction, "lands", -1)
+
+
+class AuctionBidModal(discord.ui.Modal):
+    def __init__(self) -> None:
+        super().__init__(title="المزايدة على المزاد")
+        self.bid_amount = discord.ui.TextInput(
+            label="المبلغ",
+            placeholder="اكتب مبلغ المزايدة",
+            max_length=12,
+        )
+        self.add_item(self.bid_amount)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        auction = get_active_auction()
+        if not auction:
+            await interaction.response.send_message("لا يوجد مزاد نشط الآن.", ephemeral=True)
+            return
+
+        if interaction.channel_id != auction["channel_id"]:
+            await interaction.response.send_message("هذا الزر خاص بروم المزاد فقط.", ephemeral=True)
+            return
+
+        try:
+            amount = parse_amount(str(self.bid_amount))
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        minimum_required = auction["current_bid"] + 1 if auction["current_bid"] > 0 else auction["starting_bid"]
+        if amount < minimum_required:
+            await interaction.response.send_message(
+                f"لازم تكون المزايدة `{minimum_required}` أو أعلى.",
+                ephemeral=True,
+            )
+            return
+
+        user = get_user(interaction.user.id)
+        if user["money"] < amount:
+            await interaction.response.send_message("ما تقدر تشارك لأن فلوسك ما تكفي لهذه المزايدة.", ephemeral=True)
+            return
+
+        auction["current_bid"] = amount
+        auction["current_winner_id"] = interaction.user.id
+        upsert_bid_history(auction, interaction.user.id, amount, str(interaction.user))
+
+        if auction["state"] == "countdown":
+            auction["countdown_end_at"] = time.time() + AUCTION_COUNTDOWN_SECONDS
+            auction["last_countdown_value"] = 0
+
+        save_data()
+        await update_auction_message()
+
+        await interaction.response.send_message("تم تسجيل مزايدتك.", ephemeral=True)
+
+        channel = bot.get_channel(auction["channel_id"])
+        if isinstance(channel, discord.TextChannel):
+            try:
+                await channel.send(
+                    content=f"📢 {interaction.user.mention}",
+                    embed=info_embed(
+                        "تمت المزايدة من قبل",
+                        f"رفع المزاد إلى `{amount}` على {ITEM_DEFINITIONS[auction['item_key']]['label']}.",
+                        COLOR_SUCCESS,
+                    ),
+                    delete_after=AUCTION_BID_CONFIRM_DELETE_AFTER,
+                )
+            except discord.HTTPException:
+                logger.exception("Failed to send bid confirmation message.")
+
+
+class AuctionBidView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="مزايدة", style=discord.ButtonStyle.success, custom_id="auction_bid_button")
+    async def bid_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        auction = get_active_auction()
+        if not auction:
+            await interaction.response.send_message("لا يوجد مزاد نشط الآن.", ephemeral=True)
+            return
+
+        if interaction.channel_id != auction["channel_id"]:
+            await interaction.response.send_message("هذا الزر خاص بروم المزاد فقط.", ephemeral=True)
+            return
+
+        await interaction.response.send_modal(AuctionBidModal())
 
 
 class AdminPanelView(discord.ui.View):
@@ -566,7 +1155,7 @@ class AdminPanelView(discord.ui.View):
         await interaction.response.send_message(
             embed=info_embed(
                 "تأكيد التصفير",
-                "هل أنت متأكد؟ سيتم تصفير كل الفلوس والممتلكات والعدادات لجميع المستخدمين.",
+                f"هل أنت متأكد؟ سيتم حذف الممتلكات وإرجاع كل لاعب إلى `{START_MONEY}`.",
                 COLOR_DANGER,
             ),
             view=ResetConfirmView(),
@@ -576,18 +1165,29 @@ class AdminPanelView(discord.ui.View):
 
 @bot.event
 async def on_ready() -> None:
+    global background_task, views_registered
+
     logger.info("Logged in as %s", bot.user)
-    bot.add_view(AdminPanelView())
-    bot.add_view(ClaimEventView())
+
+    if not views_registered:
+        bot.add_view(AdminPanelView())
+        bot.add_view(PriceControlView())
+        bot.add_view(ClaimEventView())
+        bot.add_view(AuctionBidView())
+        views_registered = True
 
     panel_channel = bot.get_channel(ADMIN_PANEL_CHANNEL_ID)
     if isinstance(panel_channel, discord.TextChannel):
         try:
             await update_panel_message(panel_channel)
+            await update_price_panel_message(panel_channel)
         except discord.HTTPException:
-            logger.exception("Failed to ensure admin panel message.")
+            logger.exception("Failed to ensure admin panel messages.")
 
     schedule_event_cleanup()
+
+    if background_task is None or background_task.done():
+        background_task = asyncio.create_task(background_loop())
 
 
 @bot.event
@@ -608,7 +1208,7 @@ async def on_message(message: discord.Message) -> None:
             await message.reply(embed=dashboard_embed(user, message.author))
             return
 
-        if cmd == "اوامر":
+        if cmd in {"اوامر", "أوامر"}:
             embed = base_embed(COLOR_INFO)
             embed.title = "قائمة الأوامر"
             embed.description = (
@@ -629,6 +1229,10 @@ async def on_message(message: discord.Message) -> None:
             return
 
         if cmd == "شراء" and len(args) == 1:
+            await message.reply(embed=shop_embed())
+            return
+
+        if cmd in {"اسعار", "أسعار"}:
             await message.reply(embed=shop_embed())
             return
 
@@ -789,23 +1393,13 @@ async def on_message(message: discord.Message) -> None:
 
         if cmd == "توب":
             all_users = list(data_store["users"].values())
-            ranked = sorted(
-                all_users,
-                key=lambda item: item["money"] + (item["gold"] * 850) + (item["diamonds"] * 1800) + (item["lands"] * 4500),
-                reverse=True,
-            )[:10]
+            ranked = sorted(all_users, key=estimate_user_total_value, reverse=True)[:10]
 
             lines = []
             for index, ranked_user in enumerate(ranked, start=1):
                 member = message.guild.get_member(int(ranked_user["userId"]))
                 name = member.display_name if member else f"User {ranked_user['userId']}"
-                total_value = (
-                    ranked_user["money"]
-                    + ranked_user["gold"] * 850
-                    + ranked_user["diamonds"] * 1800
-                    + ranked_user["lands"] * 4500
-                )
-                lines.append(f"`#{index}` {name} - `{total_value}`")
+                lines.append(f"`#{index}` {name} - `{estimate_user_total_value(ranked_user)}`")
 
             embed = base_embed(COLOR_GOLD)
             embed.title = "أغنى اللاعبين"
@@ -828,7 +1422,7 @@ async def on_message(message: discord.Message) -> None:
             user[item["key"]] += quantity
             save_user(user)
             await message.reply(
-                embed=card_embed("تم الشراء", f"{quantity} {args[1]} مقابل {total_price}", COLOR_SUCCESS, item["icon"])
+                embed=card_embed("تم الشراء", f"{quantity} {item['label']} مقابل {total_price}", COLOR_SUCCESS, item["icon"])
             )
             return
 
@@ -847,7 +1441,7 @@ async def on_message(message: discord.Message) -> None:
             user["money"] += total_price
             save_user(user)
             await message.reply(
-                embed=card_embed("تم البيع", f"{quantity} {args[1]} مقابل {total_price}", COLOR_WARNING, item["icon"])
+                embed=card_embed("تم البيع", f"{quantity} {item['label']} مقابل {total_price}", COLOR_WARNING, item["icon"])
             )
             return
 
@@ -856,8 +1450,8 @@ async def on_message(message: discord.Message) -> None:
                 raise ValueError("هذا الأمر فقط للرتب المصرح لها.")
             if message.channel.id != ADMIN_PANEL_CHANNEL_ID:
                 raise ValueError(f"استخدم هذا الأمر داخل روم الإدارة: {ADMIN_PANEL_CHANNEL_ID}")
-            await update_panel_message(message.channel)
-            await message.reply(embed=info_embed("تم", "تم تحديث لوحة التحكم.", COLOR_SUCCESS), delete_after=8)
+            await refresh_admin_room_panels()
+            await message.reply(embed=info_embed("تم", "تم تحديث لوحات الإدارة والأسعار.", COLOR_SUCCESS), delete_after=8)
             return
 
     except ValueError as exc:
