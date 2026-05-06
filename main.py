@@ -298,6 +298,14 @@ def get_price(item_key: str) -> dict[str, int]:
     return data_store["prices"][item_key]
 
 
+def get_current_buy_price(item_key: str) -> int:
+    return get_price(item_key)["buy_price"]
+
+
+def get_current_sell_price(item_key: str) -> int:
+    return get_price(item_key)["sell_price"]
+
+
 def format_prices_lines() -> str:
     lines = []
     for item_key in ("gold", "diamonds", "lands"):
@@ -382,13 +390,12 @@ def parse_item_key(raw_name: str) -> str:
 def parse_buy_sell_item(raw_name: str) -> dict[str, Any]:
     item_key = parse_item_key(raw_name)
     item = ITEM_DEFINITIONS[item_key]
-    prices = get_price(item_key)
     return {
         "key": item_key,
         "label": item["label"],
         "icon": item["icon"],
-        "buy_price": prices["buy_price"],
-        "sell_price": prices["sell_price"],
+        "buy_price": get_current_buy_price(item_key),
+        "sell_price": get_current_sell_price(item_key),
     }
 
 
@@ -427,9 +434,9 @@ def adjust_price(item_key: str, direction: int, auto: bool = False) -> tuple[int
 def estimate_user_total_value(user: dict[str, Any]) -> int:
     return (
         user["money"]
-        + user["gold"] * get_price("gold")["sell_price"]
-        + user["diamonds"] * get_price("diamonds")["sell_price"]
-        + user["lands"] * get_price("lands")["sell_price"]
+        + user["gold"] * get_current_sell_price("gold")
+        + user["diamonds"] * get_current_sell_price("diamonds")
+        + user["lands"] * get_current_sell_price("lands")
     )
 
 
@@ -656,7 +663,7 @@ async def create_auction() -> None:
 
     item_key = random.choice(["gold", "diamonds", "lands"])
     item = ITEM_DEFINITIONS[item_key]
-    current_buy = get_price(item_key)["buy_price"]
+    current_buy = get_current_buy_price(item_key)
     quantity = item["auction_quantity"]
     starting_bid = max(item["step"], int(round((current_buy * quantity * 0.6) / item["step"]) * item["step"]))
 
