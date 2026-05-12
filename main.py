@@ -27,7 +27,7 @@ START_MONEY = 3000
 INVEST_COOLDOWN = 180
 TRADE_COOLDOWN = 180
 STEAL_COOLDOWN = 300
-STEAL_PROTECTED_COST = 3500
+STEAL_PROTECTED_COST = 500
 DAILY_COOLDOWN = 86400
 ROULETTE_COOLDOWN = 600
 EVENT_DURATION_SECONDS = 300
@@ -1519,21 +1519,31 @@ class ProtectedStealAttemptView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         if choice != self.correct_choice:
+            credit_money(victim, STEAL_PROTECTED_COST)
             thief["lastSteal"] = time.time()
+            save_user(victim)
             save_user(thief)
             await interaction.response.edit_message(
-                embed=info_embed("فشلت المحاولة", "اختيارك كان خطأ وما قدرت تتجاوز الحماية.", COLOR_DANGER),
+                embed=info_embed(
+                    "فشلت المحاولة",
+                    f"اختيارك كان خطأ وما قدرت تتجاوز الحماية.\nتم تحويل `{STEAL_PROTECTED_COST}` للهدف.",
+                    COLOR_DANGER,
+                ),
                 view=self,
             )
             return
         stolen = resolve_steal_amount(max(1, victim["money"]))
         victim["money"] -= stolen
-        thief["money"] += stolen
+        thief["money"] += STEAL_PROTECTED_COST + stolen
         thief["lastSteal"] = time.time()
         save_user(victim)
         save_user(thief)
         await interaction.response.edit_message(
-            embed=info_embed("نجحت السرقة", f"تجاوزت الحماية وسرقت `{stolen}`.", COLOR_SUCCESS),
+            embed=info_embed(
+                "نجحت السرقة",
+                f"تجاوزت الحماية واسترجعت `{STEAL_PROTECTED_COST}` وسرقت `{stolen}`.",
+                COLOR_SUCCESS,
+            ),
             view=self,
         )
 
@@ -2305,3 +2315,4 @@ async def on_message(message: discord.Message) -> None:
 threading.Thread(target=run_web_server, daemon=True).start()
 ensure_token()
 bot.run(DISCORD_TOKEN, log_handler=None)
+
