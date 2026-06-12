@@ -5,7 +5,14 @@ import threading
 import http.server
 import socketserver
 
-# --- حيلة فتح البورت لـ Render (Web Service) ---
+# --- 1️⃣ قراءة التوكنات والمفاتيح بأمان من موقع Render ---
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# الـ ID الخاص بالروم المسموح للبوت بالرد فيه بالسيرفر
+ALLOWED_CHANNEL_ID = 1514885534336417902
+
+# --- 2️⃣ حيلة فتح البورت لـ Render (Web Service) ---
 def run_web_server():
     class MyHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
@@ -14,7 +21,6 @@ def run_web_server():
             self.end_headers()
             self.wfile.write("البوت شغال تمام ويا جبل ما يهزك ريح!".encode('utf-8'))
 
-    # ريندر يعطي البوت بورت تلقائي في المتغير PORT، وإذا ما لقى يحط 8080
     port = int(os.environ.get("PORT", 8080))
     server = socketserver.TCPServer(("0.0.0.0", port), MyHandler)
     print(f"=== تم فتح بورت الخدعة بنجاح على البورت: {port} ===")
@@ -23,22 +29,16 @@ def run_web_server():
 # تشغيل سيرفر الويب في خلفية الكود عشان ريندر ما يقفل الخدمة
 threading.Thread(target=run_web_server, daemon=True).start()
 
-
-# --- تشغيل مكتبة الذكاء الاصطناعي بشكل يضمن عدم حدوث خطأ ---
-# بنستخدم مكتبة google-generativeai كبديل أسهل في التثبيت أحياناً داخل السيرفرات
+# --- 3️⃣ تشغيل مكتبة الذكاء الاصطناعي بشكل يضمن عدم حدوث خطأ موديول ---
 try:
     import google.generativeai as genai
 except ModuleNotFoundError:
-    import os
     os.system('pip install google-generativeai')
     import google.generativeai as genai
 
-# إعداد وتجهيز المفاتيح
-DISCORD_TOKEN = "ضع_توكن_ديسكورد_هنا"
-GEMINI_API_KEY = "ضع_مفتاح_جيميني_هنا"
-ALLOWED_CHANNEL_ID = 1514885534336417902
-
+# إعداد وتجهيز مفتاح جيميني المأخوذ من المتغيرات البيئية
 genai.configure(api_key=GEMINI_API_KEY)
+
 # استخدام نموذج الفلاش السريع والخفيف للردود العامية
 ai_model = genai.GenerativeModel(
     model_name='gemini-1.5-flash',
@@ -52,8 +52,9 @@ ai_model = genai.GenerativeModel(
 """
 )
 
+# --- 4️⃣ إعدادات تشغيل بوت الديسكورد ---
 intents = discord.Intents.default()
-intents.message_content = True  
+intents.message_content = True  # ضروري لقراءة رسائل الروم واكتشاف الجو
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
@@ -65,13 +66,16 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
+    # التحقق من الروم المحدد أو الخاص (DM)
     is_dm = isinstance(message.channel, discord.DMChannel)
     if message.channel.id != ALLOWED_CHANNEL_ID and not is_dm:
         return
 
+    # الرد إذا تم منشنة البوت أو أرسل له بالخاص
     if bot.user.mentioned_in(message) or is_dm:
         async with message.channel.typing():
             try:
+                # 🧠 البوت يكتشف جو الروم عبر قراءة آخر 30 رسالة
                 context_messages = []
                 async for msg in message.channel.history(limit=30):
                     if msg.id != message.id:
