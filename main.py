@@ -4,6 +4,7 @@ import os
 import threading
 import http.server
 import socketserver
+import google.generativeai as genai  # استدعاء مباشر ونظيف
 
 # --- 1️⃣ قراءة التوكنات والمفاتيح بأمان من موقع Render ---
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
@@ -26,17 +27,10 @@ def run_web_server():
     print(f"=== تم فتح بورت الخدعة بنجاح على البورت: {port} ===")
     server.serve_forever()
 
-# تشغيل سيرفر الويب في خلفية الكود عشان ريندر ما يقفل الخدمة
+# تشغيل سيرفر الويب في خلفية الكود عشان ريندر يرتاح
 threading.Thread(target=run_web_server, daemon=True).start()
 
-# --- 3️⃣ تشغيل مكتبة الذكاء الاصطناعي بشكل يضمن عدم حدوث خطأ موديول ---
-try:
-    import google.generativeai as genai
-except ModuleNotFoundError:
-    os.system('pip install google-generativeai')
-    import google.generativeai as genai
-
-# إعداد وتجهيز مفتاح جيميني المأخوذ من المتغيرات البيئية
+# --- 3️⃣ إعداد وتجهيز مفتاح جيميني ---
 genai.configure(api_key=GEMINI_API_KEY)
 
 # استخدام نموذج الفلاش السريع والخفيف للردود العامية
