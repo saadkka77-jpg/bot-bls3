@@ -4,6 +4,7 @@ import sqlite3
 import random
 import asyncio
 import os
+import time
 from threading import Thread
 from flask import Flask
 from PIL import Image, ImageDraw
@@ -25,11 +26,11 @@ def keep_alive():
 # ----------------- إعدادات البوت والـ Intents -----------------
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+# تم تغيير البريفكس ليصبح سادة بدون علامة تعجب
+bot = commands.Bot(command_prefix="", intents=intents)
 
-# روم الرد الافتراضي وروم المتجر
+# الروم الموحد المخصص للعب والبيع وكل شيء
 GAME_CHANNEL_ID = 1515267885201625150
-MARKET_CHANNEL_ID = 1515278371129528391
 
 # ----------------- إعدادات قاعدة البيانات SQLITE -----------------
 conn = sqlite3.connect('kingdom_war.db')
@@ -71,20 +72,22 @@ conn.commit()
 
 # ----------------- أنظمة وميزات اللعبة الداخلية -----------------
 current_market_items = {}
-market_open = True
+last_market_update = 0  # لتتبع وقت تحديث السوق تلقائياً كل 15 دقيقة
 
 def generate_market_items():
-    global current_market_items
+    global current_market_items, last_market_update
     items = {
-        "فحم": {"price": random.randint(15, 30), "stock": random.randint(5, 20)},
-        "الماس": {"price": random.randint(100, 200), "stock": random.randint(1, 5)},
-        "خشب": {"price": random.randint(10, 20), "stock": random.randint(10, 50)},
-        "حجر": {"price": random.randint(12, 25), "stock": random.randint(10, 40)},
-        "حديد": {"price": random.randint(25, 50), "stock": random.randint(5, 30)},
+        "فحم": {"price": random.randint(15, 30), "stock": random.randint(5, 15)},
+        "الماس": {"price": random.randint(100, 200), "stock": random.randint(1, 3)},
+        "خشب": {"price": random.randint(10, 20), "stock": random.randint(10, 30)},
+        "حجر": {"price": random.randint(12, 25), "stock": random.randint(10, 25)},
+        "حديد": {"price": random.randint(25, 50), "stock": random.randint(5, 15)},
         "بناء إضافي": {"price": 1500, "stock": 1}
     }
-    selected_keys = random.sample(list(items.keys()), 4)
+    # تم تقليل عدد الأغراض المعروضة إلى 2 فقط لتصبح الأغراض قليلة جداً
+    selected_keys = random.sample(list(items.keys()), 2)
     current_market_items = {k: items[k] for k in selected_keys}
+    last_market_update = time.time()
 
 def draw_kingdom_map():
     img = Image.new('RGB', (800, 800), color='#1e3f20')
@@ -108,26 +111,7 @@ def draw_kingdom_map():
         
     img.save('map.png')
 
-# ----------------- الـ Loops التلقائية -----------------
-@tasks.loop(minutes=15)
-async def market_rotation_loop():
-    global market_open
-    generate_market_items()
-    market_open = True
-    channel = bot.get_channel(MARKET_CHANNEL_ID)
-    if channel:
-        embed = discord.Embed(title="🏪 متجر الممالك المتنقل - بضائع جديدة!", color=discord.Color.gold())
-        embed.description = "وصل التاجر المتجول للسيرفر وحمل معه بضائع فريدة! سيغلق السوق ويغير بضائعه بعد 15 دقيقة."
-        for item, info in current_market_items.items():
-            embed.add_field(name=f"📦 {item}", value=f"السعر: `{info['price']}` ذهبة\nالكمية المتاحة: `{info['stock']}`", inline=True)
-        
-        embed.set_footer(text="للشراء اكتب: !شراء [اسم_الغرض] [الكمية]")
-        await channel.send(embed=embed)
-        
-        await asyncio.sleep(780)
-        market_open = False
-        await channel.send("⚠️ **أغلق التاجر صناديقه! السوق مغلق الآن مؤقتاً لتجهيز البضائع الجديدة...**")
-
+# ----------------- الـ Loops التلقائية المتبقية -----------------
 @tasks.loop(minutes=20)
 async def miners_production_loop():
     cursor.execute("SELECT user_id, miners FROM players WHERE miners > 0")
@@ -199,21 +183,21 @@ async def iron_house_bonus_loop():
 @bot.event
 async def on_ready():
     print(f"👑 تم تشغيل البوت بنجاح باسم: {bot.user}")
-    market_rotation_loop.start()
+    generate_market_items() # توليد أول بضاعة عند التشغيل
     miners_production_loop.start()
     half_hour_tax_loop.start()
     iron_house_bonus_loop.start()
 
 def is_game_channel():
     async def predicate(ctx):
-        if ctx.channel.id != GAME_CHANNEL_ID and ctx.channel.id != MARKET_CHANNEL_ID:
+        if ctx.channel.id != GAME_CHANNEL_ID:
             await ctx.send(f"⚠️ **عذراً الملك، الأوامر الاستراتيجية تنفذ فقط في الروم المخصص: <#{GAME_CHANNEL_ID}>**")
             return False
         return True
     return commands.check(predicate)
 
-# ----------------- أوامر البوت -----------------
-@bot.command(name="انشاء_ارض")
+# ----------------- أوامر البوت المعدلة بدون علامات -----------------
+@bot.command(name="انشان_ارض", aliases=["انشاء_ارض"])
 @is_game_channel()
 async def create_land(ctx, *, name: str):
     uid = ctx.author.id
@@ -244,7 +228,7 @@ async def info_kingdom(ctx):
     p = cursor.fetchone()
     
     if not p or p[1] is None:
-        return await ctx.send("❌ **لا تملك أرضاً بعد! اكتب: `!انشاء_ارض [اسم الأرض]` لبدء مسيرتك.**")
+        return await ctx.send("❌ **لا تملك أرضاً بعد! اكتب: `انشاء_ارض [اسم الأرض]` لبدء مسيرتك.**")
         
     embed = discord.Embed(title=f"🏰 مملكة 【 {p[1]} 】 -- الحاكم {ctx.author.name}", color=discord.Color.dark_red())
     embed.add_field(name="💰 الخزينة والعملات", value=f"🪙 الذهب: `{p[2]}`\n💎 الألماس: `{p[4]}`\n🔥 الفحم: `{p[3]}`", inline=True)
@@ -254,6 +238,54 @@ async def info_kingdom(ctx):
     embed.add_field(name="🕵️ الأجهزة السرية", value=f"🕵️ الجواسيس: `{p[15]}`\n⛏️ المنقبين: `{p[16]}/10 [Max]`", inline=True)
     
     await ctx.send(embed=embed)
+
+@bot.command(name="بائع", aliases=["البائع", "سوق", "المتجر"])
+@is_game_channel()
+async def show_market(ctx):
+    global current_market_items, last_market_update
+    # التحقق مما إذا مرت 15 دقيقة (900 ثانية) لتحديث السوق عشوائياً تلقائياً
+    if time.time() - last_market_update > 900:
+        generate_market_items()
+
+    embed = discord.Embed(title="🏪 متجر الممالك المتنقل - البضائع المتاحة!", color=discord.Color.gold())
+    embed.description = "وصل التاجر المتجول لساحة الحرب وحمل معه بضائع محدودة جداً! يتغير السوق تلقائياً كل 15 دقيقة."
+    for item, info in current_market_items.items():
+        embed.add_field(name=f"📦 {item}", value=f"السعر: `{info['price']}` ذهبة\nالكمية المتاحة: `{info['stock']}`", inline=True)
+    
+    embed.set_footer(text="للشراء اكتب: شراء [اسم_الغرض] [الكمية]")
+    await ctx.send(embed=embed)
+
+@bot.command(name="شراء")
+@is_game_channel()
+async def buy_market(ctx, item_name: str, quantity: int = 1):
+    global current_market_items
+    if time.time() - last_market_update > 900:
+        generate_market_items()
+        
+    if item_name not in current_market_items: 
+        return await ctx.send("❌ هذا الغرض غير متوفر في بضائع التاجر الحالية، اكتب `بائع` لرؤية المتاح.")
+    
+    uid = ctx.author.id
+    info = current_market_items[item_name]
+    if info['stock'] < quantity: 
+        return await ctx.send(f"❌ الكمية المطلوبة غير متوفرة! المتاح هو `{info['stock']}` فقط.")
+    
+    total_cost = info['price'] * quantity
+    cursor.execute("SELECT gold FROM players WHERE user_id = ?", (uid,))
+    p_gold = cursor.fetchone()[0]
+    if p_gold < total_cost: 
+        return await ctx.send(f"❌ ذهبك غير كافٍ. تحتاج `{total_cost}` ذهبة لشراء هذه الكمية.")
+    
+    current_market_items[item_name]['stock'] -= quantity
+    res_map = {"فحم": "coal", "الماس": "diamonds", "خشب": "wood", "حجر": "stone", "حديد": "iron"}
+    if item_name in res_map:
+        db_col = res_map[item_name]
+        cursor.execute(f"UPDATE players SET gold = gold - ?, {db_col} = {db_col} + ? WHERE user_id = ?", (total_cost, quantity, uid))
+    elif item_name == "بناء إضافي":
+        cursor.execute("UPDATE players SET gold = gold - ?, builders = builders + ? WHERE user_id = ?", (total_cost, quantity, uid))
+        
+    conn.commit()
+    await ctx.send(f"🛍️ **تمت عملية الشراء بنجاح! اشتريت `{quantity}` من [{item_name}] بسعر إجمالي ناهز `{total_cost}` ذهبة.**")
 
 @bot.command(name="تطوير_بيت")
 @is_game_channel()
@@ -350,7 +382,7 @@ class ChallengeView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user != self.author:
-            await interaction.response.send_message("❌ **هذا التحدي ملك لحاكم آخر، اكتب `!تحدي` للحصول على تحدياتك الخاصة!**", ephemeral=True)
+            await interaction.response.send_message("❌ **هذا التحدي ملك لحاكم آخر، اكتب `تحدي` للحصول على تحدياتك الخاصة!**", ephemeral=True)
             return False
         return True
 
@@ -415,7 +447,7 @@ async def steal_gold(ctx, target: discord.Member):
     cursor.execute("SELECT spies, gold FROM players WHERE user_id = ?", (tid,))
     p_target = cursor.fetchone()
     
-    if not p_thief or p_thief[0] < 1: return await ctx.send("❌ **لا تمتلك جواسيس! وظف جاسوس أولاً عبر أمر: `!توظيف_جاسوس`.**")
+    if not p_thief or p_thief[0] < 1: return await ctx.send("❌ **لا تمتلك جواسيس! وظف جاسوس أولاً عبر أمر: `توظيف_جاسوس`.**")
     if not p_target or p_target[1] <= 0: return await ctx.send("❌ **خزينة هذا الحاكم خالية تماماً من الذهب حالياً.**")
     
     await ctx.send(f"🕵️‍♂️ **تسلل جاسوسك متوجهاً لخزائن {target.mention}... جاري تنفيذ العملية السرية!**")
@@ -518,33 +550,6 @@ async def attack(ctx, target: discord.Member):
         embed = discord.Embed(title="💀 هزيمة نكراء وانكسار للجيش 💀", color=discord.Color.red())
         embed.description = f"فشلت جحافل الحاكم {ctx.author.mention} في اختراق دفاعات الصمود لمملكة {target.mention}.. تم إبادة جيش المهاجم بالكامل وتشتيت شملهم!"
         await ctx.send(embed=embed)
-
-@bot.command(name="شراء")
-@is_game_channel()
-async def buy_market(ctx, item_name: str, quantity: int = 1):
-    global current_market_items
-    if not market_open: return await ctx.send("❌ المتجر مغلق الآن بواسطة التاجر.")
-    if item_name not in current_market_items: return await ctx.send("❌ هذا الغرض غير متوفر في قائمة بضائع التاجر الحالية.")
-    
-    uid = ctx.author.id
-    info = current_market_items[item_name]
-    if info['stock'] < quantity: return await ctx.send(f"❌ الكمية المطلوبة غير متوفرة! المتاح في المخزن هو `{info['stock']}` فقط.")
-    
-    total_cost = info['price'] * quantity
-    cursor.execute("SELECT gold FROM players WHERE user_id = ?", (uid,))
-    p_gold = cursor.fetchone()[0]
-    if p_gold < total_cost: return await ctx.send(f"❌ ذهبك غير كافٍ. تحتاج `{total_cost}` ذهبة لشراء هذه الكمية.")
-    
-    current_market_items[item_name]['stock'] -= quantity
-    res_map = {"فحم": "coal", "الماس": "diamonds", "خشب": "wood", "حجر": "stone", "حديد": "iron"}
-    if item_name in res_map:
-        db_col = res_map[item_name]
-        cursor.execute(f"UPDATE players SET gold = gold - ?, {db_col} = {db_col} + ? WHERE user_id = ?", (total_cost, quantity, uid))
-    elif item_name == "بناء إضافي":
-        cursor.execute("UPDATE players SET gold = gold - ?, builders = builders + ? WHERE user_id = ?", (total_cost, quantity, uid))
-        
-    conn.commit()
-    await ctx.send(f"🛍️ **تمت عملية الشراء بنجاح! اشتريت `{quantity}` من [{item_name}] بسعر إجمالي ناهز `{total_cost}` ذهبة.**")
 
 @bot.command(name="بيع")
 @is_game_channel()
