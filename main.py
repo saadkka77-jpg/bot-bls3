@@ -172,19 +172,20 @@ async def on_message(message):
             inline=False
         )
         
-        img_banks = "https://cdn.discordapp.com/attachments/1479654263620898897/1509660121167298580/8af69cb5-adc4-4416-ac2a-126d7b5b586c.png?ex=6a2dc28d&is=6a2c710d&hm=ba0594f5e80a5626a452881a175614bd1edb5e3bbf66e78dbc6307641bdcb027&"
+        # استبدال رابط صورة البنوك بالرابط الجديد من رسالة الديسكورد
+        img_banks = "https://cdn.discordapp.com/attachments/1479654263620898897/1509660121217892384/8af69cb5-adc4-4416-ac2a-126d7b5b586c.png"
         embed.set_image(url=img_banks)
         embed.set_footer(text="متجر BLS الرسمي", icon_url=bot.user.avatar.url if bot.user.avatar else "")
 
         # إرسال الرسالة الأولى للمتجر
         await message.channel.send(content="|| @everyone ||", embed=embed)
 
-        # رسالة الصورة الثانية التوضيحية
+        # رسالة الصورة الثانية التوضيحية (تم استبدال الرابط بالجديد)
         embed_info = discord.Embed(
             description="***هذا توضيح كامل لكل شيء ممكن يواجهك في أي حساب مشترك الرجاء مراجعة قوانين المتجر من الجميع قبل أي شراء***",
             color=discord.Color.gold()
         )
-        img_info = "https://cdn.discordapp.com/attachments/1479654263620898897/1512939354081853492/2169675d-38fd-48db-be9f-8b137f641d25.jpg?ex=6a2dd313&is=6a2c8193&hm=ea8c103251e4d0cdf24f7e3ba305e53f33a6209398dc70b98b8f7c006d8a6ba0&"
+        img_info = "https://cdn.discordapp.com/attachments/1479654263620898897/1512939354350293133/2169675d-38fd-48db-be9f-8b137f641d25.jpg"
         embed_info.set_image(url=img_info)
         
         await message.channel.send(embed=embed_info)
