@@ -15,7 +15,7 @@ def run_web_server():
             self.send_response(200)
             self.send_header("Content-type", "text/plain; charset=utf-8")
             self.end_headers()
-            self.wfile.write("البوت شغال تمام!".encode('utf-8'))
+            self.wfile.write("البوت شغال تمام وبأعلى كفاءة!".encode('utf-8'))
 
         def log_message(self, format, *args):
             return
@@ -29,26 +29,35 @@ def run_web_server():
 
 threading.Thread(target=run_web_server, daemon=True).start()
 
-# --- 3️⃣ إعدادات تشغيل بوت الديسكورد ---
-intents = discord.Intents.default()
-intents.message_content = True  # تفعيل خاصية قراءة محتوى الرسائل
+# --- 3️⃣ إعدادات تشغيل بوت الديسكورد وتفعيل الصلاحيات الكاملة ---
+intents = discord.Intents.all()  # تفعيل كل الصلاحيات لضمان عدم تجاهل الروم
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"تم تشغيل البوت بنجاح باسم: {bot.user.name}")
+    print(f"تم تشغيل البوت المصلح بنجاح باسم: {bot.user.name}")
 
 @bot.event
 async def on_message(message):
-    # تجنب رد البوت على نفسه عشان ما يدخل في تكرار لا نهائي
+    # تجنب رد البوت على نفسه عشان ما يكرر الكلام
     if message.author == bot.user:
         return
 
-    # التحقق من أن الرسالة أُرسلت في الروم المحدد فقط
-    if message.channel.id == 1514885534336417902:
-        # الرد المباشر على أي رسالة تنرسل في هذا الروم
-        await message.channel.send("نادر غدار و سعد تاج راسه")
+    # التحقق من الـ ID الصحيح للروم المطلوب كـ رقم (Integer)
+    TARGET_CHANNEL_ID = 1514885534336417902
 
+    if message.channel.id == TARGET_CHANNEL_ID:
+        try:
+            # الرد المباشر بطلبك
+            await message.channel.send("نادر غدار و سعد تاج راسه")
+        except Exception as e:
+            print(f"مشكلة في إرسال الرسالة: {e}")
+
+    # السماح للأوامر الأخرى بالعمل إن وجدت
     await bot.process_commands(message)
 
-bot.run(DISCORD_TOKEN)
+# تشغيل البوت
+if DISCORD_TOKEN:
+    bot.run(DISCORD_TOKEN)
+else:
+    print("خطأ: لم يتم العثور على التوكن DISCORD_TOKEN في إعدادات Render!")
