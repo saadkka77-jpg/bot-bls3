@@ -5,23 +5,19 @@ import threading
 import http.server
 from http.server import ThreadingHTTPServer
 
-# --- 1️⃣ قراءة التوكنات بأمان من موقع Render ---
+# --- 1️⃣ قراءة التوكن بأمان من موقع Render ---
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 
-# الـ ID الخاص بالروم المسموح للبوت بالرد فيه بالسيرفر
-ALLOWED_CHANNEL_ID = 1514885534336417902
-
-# --- 2️⃣ حيلة فتح البورت لـ Render (Web Service لضمان البقاء صاحي) ---
+# --- 2️⃣ حيلة فتح البورت لـ Render لضمان البقاء صاحي 24/7 ---
 def run_web_server():
     class MyHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.send_header("Content-type", "text/plain; charset=utf-8")
             self.end_headers()
-            self.wfile.write("البوت شغال تمام ويا جبل ما يهزك ريح!".encode('utf-8'))
+            self.wfile.write("البوت شغال تمام في كل الرومات!".encode('utf-8'))
 
         def log_message(self, format, *args):
-            # كتم سجلات الـ GET المستمرة لمنع امتلاء الـ Terminal برسايل الـ Ping
             return
 
     port = int(os.environ.get("PORT", 8080))
@@ -32,7 +28,6 @@ def run_web_server():
     except Exception as e:
         print(f"خطأ في تشغيل سيرفر الويب: {e}")
 
-# تشغيل سيرفر الويب في خلفية الكود عشان ريندر يرتاح ولا ينام
 threading.Thread(target=run_web_server, daemon=True).start()
 
 # --- 3️⃣ إعدادات تشغيل بوت الديسكورد ---
@@ -42,7 +37,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"البوت الإداري شغال وجاهز لخدمة سيرفر BLS باسم: {bot.user.name}")
+    print(f"البوت الإداري شغال وجاهز لخدمة سيرفر BLS في كل الرومات باسم: {bot.user.name}")
 
 @bot.event
 async def on_message(message):
@@ -50,24 +45,18 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # التحقق من الروم المحدد أو الخاص (DM)
-    is_dm = isinstance(message.channel, discord.DMChannel)
-    if message.channel.id != ALLOWED_CHANNEL_ID and not is_dm:
-        return
-
-    # تنظيف النص وجعله كلمات صغيرة لتسهيل التحقق
-    content = message.content.strip().lower()
+    # تنظيف النص وجعله كلمات صغيرة وإزالة علامة التعجب لتسهيل التحقق في كل الرومات
+    content = message.content.strip().lower().replace("!", "")
 
     # ==================== أمر: قوانين ====================
     if content == "قوانين":
-        # إنشاء إمبيد القوانين
         embed = discord.Embed(
             title="📜 قوانين وإرشادات سيرفر BLS",
             description="نرجو من جميع الأعضاء الالتزام التام بالقوانين التالية للحفاظ على مجتمع آمن ومحترم للجميع.",
             color=discord.Color.red()
         )
         
-        # وضع شعار السيرفر فوق يمين الإمبيد إذا كان متوفراً، أو استخدام الصورة الشخصية للبوت كبديل
+        # وضع شعار السيرفر فوق يمين الإمبيد
         if message.guild and message.guild.icon:
             embed.set_thumbnail(url=message.guild.icon.url)
         else:
@@ -100,7 +89,6 @@ async def on_message(message):
         )
         
         embed.set_footer(text="إدارة سيرفر BLS • الاحترام أساس مجتمعنا", icon_url=bot.user.avatar.url if bot.user.avatar else "")
-        
         await message.channel.send(content="|| @everyone ||", embed=embed)
 
     # ==================== أمر: رانك ====================
@@ -121,25 +109,21 @@ async def on_message(message):
             value="<@&1479223202336084230>\n<@&1479240455974686791>\n<@&1479240650435068085>\n<@&1479240876810174595>\n<@&1479240916601667604>\n<@&1479240999346638978>\n<@&1479241080326066296>\n<@&1479241114811629680>",
             inline=False
         )
-        
         embed.add_field(
             name="🛡️ [ رانـــك أوفر واتش ]",
             value="<@&1479253167836499978>\n<@&1479928984711204946>\n<@&1480017625772986468>\n<@&1479537667577348137>\n<@&1479537820740751402>\n<@&1479539094999531522>\n<@&1479538006145761542>\n<@&1479538137960022018>\n<@&1479539783142477934>\n\n*رانك أوفر واتش لمنصة الحاسب منفصل عن منصة السوني، كما وفرنا قناة مشتركة إذا كنت ترغب في اللعب مع أصدقائك من منصات مختلفة. توجد رتبة خاصة لمستخدِمي البي سي ورتبة خاصة لمستخدِمي السوني وذلك لأن نظام التصنيف في أوفر واتش يختلف عن باقي الألعاب.*",
             inline=False
         )
-        
         embed.add_field(
             name="💥 [ مــارفــل ريــفــلــز ]",
             value="<@&1480079573797437490>\n<@&1480079673722409143>\n<@&1480079726709182616>\n<@&1480079933794549910>\n<@&1480080104494469121>\n<@&1480080178754617467>",
             inline=False
         )
-        
         embed.add_field(
             name="🔫 [ رانــك كــود ]",
             value="<@&1480081751299723344>\n<@&1480082094427471882>\n<@&1480082355459850240>\n<@&1480082585760698368>\n<@&1480082810155958343>\n<@&1480082979798651033>\n<@&1480083149605179473>",
             inline=False
         )
-        
         embed.add_field(
             name="🚀 ابدأ رحلتك الآن",
             value="اختر رتبتك الآن وابدأ رحلتك نحو القمة! للحصول على الرتبة يرجى فتح تذكرة في [ <#1481127399042322582> ] الدعم الفني.",
@@ -147,7 +131,6 @@ async def on_message(message):
         )
         
         embed.set_footer(text="سيرفر BLS • نحو القمة دائماً", icon_url=bot.user.avatar.url if bot.user.avatar else "")
-        
         await message.channel.send(content="|| @everyone ||", embed=embed)
 
     # ==================== أمر: متجر ====================
@@ -179,28 +162,25 @@ async def on_message(message):
             ),
             inline=False
         )
-        
         embed.add_field(
             name="💡 إعلان صريح ومهم",
             value="***بشرائك من المتجر أو مشاركتك في المزاد، أنت تعلن صراحةً اطلاعك على هذه القوانين وموافقتك عليها. الإدارة غير ملزمة بتنبيهك قبل تنفيذ العقوبة في حال ارتكاب أي مخالفة لهذه البنود.***",
             inline=False
         )
-
         embed.add_field(
             name="💰 طرق الدفع المعتمدة :",
             value="**` البنوك السعوديه `**\n*موضحة في الصورة أدناه*",
             inline=False
         )
         
-        # إضافة الصورة الأولى الخاصة بالبنوك السعودية لداخل الإمبيد الرئيسي
         img_banks = "https://cdn.discordapp.com/attachments/1479654263620898897/1509660121167298580/8af69cb5-adc4-4416-ac2a-126d7b5b586c.png?ex=6a2dc28d&is=6a2c710d&hm=ba0594f5e80a5626a452881a175614bd1edb5e3bbf66e78dbc6307641bdcb027&"
         embed.set_image(url=img_banks)
         embed.set_footer(text="متجر BLS الرسمي", icon_url=bot.user.avatar.url if bot.user.avatar else "")
 
-        # إرسال الإمبيد الأول ومعه منشن الإيفري وان
+        # إرسال الرسالة الأولى للمتجر
         await message.channel.send(content="|| @everyone ||", embed=embed)
 
-        # إنشاء إمبيد ثانٍ منفصل وربطه بالصورة الثانية التوضيحية للحسابات المشتركة
+        # رسالة الصورة الثانية التوضيحية
         embed_info = discord.Embed(
             description="***هذا توضيح كامل لكل شيء ممكن يواجهك في أي حساب مشترك الرجاء مراجعة قوانين المتجر من الجميع قبل أي شراء***",
             color=discord.Color.gold()
@@ -212,5 +192,4 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# تشغيل البوت باستخدام التوكن الخاص بك
 bot.run(DISCORD_TOKEN)
