@@ -45,18 +45,17 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # تنظيف النص وجعله كلمات صغيرة وإزالة علامة التعجب لتسهيل التحقق في كل الرومات
+    # تنظيف النص وجعله كلمات صغيرة وإزالة علامة التعجب
     content = message.content.strip().lower().replace("!", "")
 
     # ==================== أمر: قوانين ====================
-    if content == "قوانين":
+    if "قوانين" in content:
         embed = discord.Embed(
             title="📜 قوانين وإرشادات سيرفر BLS",
             description="نرجو من جميع الأعضاء الالتزام التام بالقوانين التالية للحفاظ على مجتمع آمن ومحترم للجميع.",
             color=discord.Color.red()
         )
         
-        # وضع شعار السيرفر فوق يمين الإمبيد
         if message.guild and message.guild.icon:
             embed.set_thumbnail(url=message.guild.icon.url)
         else:
@@ -92,7 +91,7 @@ async def on_message(message):
         await message.channel.send(content="|| @everyone ||", embed=embed)
 
     # ==================== أمر: رانك ====================
-    elif content == "رانك":
+    elif "رانك" in content:
         embed = discord.Embed(
             title="🎮 الـــرتـــب الــمــتــاحـــة لـلــرانــكــا",
             description="نظام الرتب (الرانك) هو نظام مخصص لتحسين اللعب ورفع المستويات بحيث تلعب مع أشخاص بمثل مستواك أو أقل إذا رغبت في ذلك. وفرنا هذا النظام لجعل تجربتك في الألعاب أفضل ولتطوير مهاراتك. لكل رتبة دور (Role) محدد وقنوات صوتية وكتابية خاصة بها، بعيداً عن الدردشة العامة للعبة.",
@@ -134,7 +133,7 @@ async def on_message(message):
         await message.channel.send(content="|| @everyone ||", embed=embed)
 
     # ==================== أمر: متجر ====================
-    elif content == "متجر":
+    elif "متجر" in content:
         embed = discord.Embed(
             title="🏪 اتفاقية وقوانين التعامل مع المتجر",
             description="***بمجرد تعاملك مع المتجر أو دخولك للمزاد، فإنك تقر بموافقتك التامة على الشروط والسياسات التالية:***",
