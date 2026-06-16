@@ -28,15 +28,15 @@ def keep_alive():
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-ROLE_ID = 1516370348717772971
-ALLOWED_CHANNEL = 1478970736717598840
+GAME_ROLE_ID = 1516370348717772971
+REQUIRED_ROLE_ID = 1478970736717598840
 PANEL_COLOR = 0xE10600
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="", intents=intents)
 
 
 # =========================
@@ -57,11 +57,11 @@ class GameRoleView(View):
         guild = interaction.guild
         member = interaction.user
 
-        role = guild.get_role(ROLE_ID)
+        role = guild.get_role(GAME_ROLE_ID)
 
         if role is None:
             await interaction.response.send_message(
-                "❌ لم أجد الرتبة. تأكد أن آيدي الرتبة صحيح.",
+                "❌ لم أجد رتبة اللعبة. تأكد أن آيدي الرتبة صحيح.",
                 ephemeral=True
             )
             return
@@ -81,7 +81,7 @@ class GameRoleView(View):
             )
         except discord.Forbidden:
             await interaction.response.send_message(
-                "❌ لا أستطيع إعطاء الرتبة. تأكد أن رتبة البوت أعلى من هذه الرتبة وأن لديه صلاحية Manage Roles.",
+                "❌ لا أستطيع إعطاء الرتبة. تأكد أن رتبة البوت أعلى من رتبة اللعبة وأن لديه صلاحية Manage Roles.",
                 ephemeral=True
             )
         except discord.HTTPException:
@@ -105,10 +105,9 @@ async def on_ready():
 # Commands
 # =========================
 
-@bot.command(name="رتبة1")
-@commands.has_permissions(administrator=True)
+@bot.command(name="S")
 async def role_panel(ctx):
-    if ctx.channel.id != ALLOWED_CHANNEL:
+    if not any(role.id == REQUIRED_ROLE_ID for role in ctx.author.roles):
         return
 
     embed = discord.Embed(
@@ -126,13 +125,6 @@ async def role_panel(ctx):
     embed.set_footer(text="Role System")
 
     await ctx.send(embed=embed, view=GameRoleView())
-
-
-@role_panel.error
-async def role_panel_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        if ctx.channel.id == ALLOWED_CHANNEL:
-            await ctx.send("❌ هذا الأمر للإدارة فقط.")
 
 
 # =========================
