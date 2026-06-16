@@ -1,106 +1,147 @@
 import discord
 from discord.ext import commands
-import sqlite3
-import asyncio
+from discord.ui import View, Button
 import os
 from flask import Flask
 from threading import Thread
 
-# --- إعداد الويب للـ UptimeRobot ---
-app = Flask('')
-@app.route('/')
-def home(): return "Bot is Fully Operational!"
-def run_web(): app.run(host='0.0.0.0', port=8080)
-def keep_alive(): Thread(target=run_web).start()
+# =========================
+# Web Server for UptimeRobot
+# =========================
 
-# --- قاعدة البيانات ---
-conn = sqlite3.connect('server_stats.db')
-cursor = conn.cursor()
-cursor.execute('''CREATE TABLE IF NOT EXISTS users 
-                  (uid INTEGER PRIMARY KEY, interaction INTEGER DEFAULT 0, promo INTEGER DEFAULT 0)''')
-conn.commit()
+app = Flask("")
 
-# --- الإعدادات ---
+@app.route("/")
+def home():
+    return "Bot is Fully Operational!"
+
+def run_web():
+    app.run(host="0.0.0.0", port=8080)
+
+def keep_alive():
+    Thread(target=run_web).start()
+
+
+# =========================
+# Bot Settings
+# =========================
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+ROLE_ID = 1516370348717772971
+ALLOWED_CHANNEL = 1478970736717598840
+PANEL_COLOR = 0xE10600
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-intents.voice_states = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# الثوابت
-ALLOWED_ROLES = [1482194383515422752, 1480443913557905499]
-EXCLUDED_ROLES = [1514389169089020125]
-EXCLUDED_CHANNELS = [1516298849981825134, 1516298935185178845]
-ADMIN_ROLES = [1490386915629989948, 1478971845729583276, 1505984803839676466]
-CONTROL_CHANNEL = 1516300938472849458
-PHOTO_CHANNEL = 1516298935185178845
 
-def update_db(uid, col, val):
-    cursor.execute("INSERT OR IGNORE INTO users (uid) VALUES (?)", (uid,))
-    cursor.execute(f"UPDATE users SET {col} = {col} + ? WHERE uid = ?", (val, uid))
-    conn.commit()
+# =========================
+# Role Button View
+# =========================
+
+class GameRoleView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="خذ رتبة 𝐀𝐬𝐬𝐢𝐭𝐨 𝐂𝐨𝐫𝐬𝐚",
+        style=discord.ButtonStyle.danger,
+        emoji="🏎️",
+        custom_id="assetto_corsa_role_button"
+    )
+    async def assetto_corsa_role(self, interaction: discord.Interaction, button: Button):
+        guild = interaction.guild
+        member = interaction.user
+
+        role = guild.get_role(ROLE_ID)
+
+        if role is None:
+            await interaction.response.send_message(
+                "❌ لم أجد الرتبة. تأكد أن آيدي الرتبة صحيح.",
+                ephemeral=True
+            )
+            return
+
+        if role in member.roles:
+            await interaction.response.send_message(
+                "✅ أنت تملك رتبة 𝐀𝐬𝐬𝐢𝐭𝐨 𝐂𝐨𝐫𝐬𝐚 بالفعل.",
+                ephemeral=True
+            )
+            return
+
+        try:
+            await member.add_roles(role, reason="Assetto Corsa role panel")
+            await interaction.response.send_message(
+                "✅ تم إعطاؤك رتبة 𝐀𝐬𝐬𝐢𝐭𝐨 𝐂𝐨𝐫𝐬𝐚 بنجاح.",
+                ephemeral=True
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ لا أستطيع إعطاء الرتبة. تأكد أن رتبة البوت أعلى من هذه الرتبة وأن لديه صلاحية Manage Roles.",
+                ephemeral=True
+            )
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "❌ صار خطأ أثناء إعطاء الرتبة، حاول مرة ثانية.",
+                ephemeral=True
+            )
+
+
+# =========================
+# Events
+# =========================
 
 @bot.event
-async def on_message(message):
-    if message.author.bot: return
-    
-    # أوامر التحكم
-    if message.channel.id == CONTROL_CHANNEL:
-        await bot.process_commands(message)
-    
-    # استثناء الرومات والرتب
-    if message.channel.id in EXCLUDED_CHANNELS: return
-    if any(r.id in EXCLUDED_ROLES for r in message.author.roles): return
+async def on_ready():
+    bot.add_view(GameRoleView())
+    print(f"Logged in as {bot.user}")
 
-    # نظام الصور
-    if message.channel.id == PHOTO_CHANNEL and message.attachments:
-        if len(message.attachments) > 1:
-            await message.author.send("❌ **يرجى إرسال صورة واحدة فقط في كل رسالة!**")
-            await message.delete()
-            return
-        await message.add_reaction("✅")
-        await message.add_reaction("❌")
+
+# =========================
+# Commands
+# =========================
+
+@bot.command(name="رتبة1")
+@commands.has_permissions(administrator=True)
+async def role_panel(ctx):
+    if ctx.channel.id != ALLOWED_CHANNEL:
         return
 
-    # حساب نقاط الرسائل
-    if any(r.id in ALLOWED_ROLES for r in message.author.roles):
-        if not message.content.startswith("!"):
-            update_db(message.author.id, "interaction", 13)
-            
-    # عرض النقاط
-    if message.content.lower() == "تفاعل":
-        cursor.execute("SELECT interaction, promo FROM users WHERE uid = ?", (message.author.id,))
-        res = cursor.fetchone()
-        embed = discord.Embed(title="📊 إحصائياتك", description=f"تفاعل: `{res[0] if res else 0}`\nترقية: `{res[1] if res else 0}`", color=0x2b2d31)
-        await message.channel.send(embed=embed)
+    embed = discord.Embed(
+        title="🏎️ 𝐀𝐬𝐬𝐢𝐭𝐨 𝐂𝐨𝐫𝐬𝐚",
+        description=(
+            "**الرتبة الجديدة للعبة 𝐀𝐬𝐬𝐢𝐭𝐨 𝐂𝐨𝐫𝐬𝐚**\n\n"
+            "اضغط على الزر بالأسفل وخذ الرتبة عشان يطلع لك كل شيء يخص اللعبة."
+        ),
+        color=PANEL_COLOR
+    )
 
-@bot.event
-async def on_raw_reaction_add(payload):
-    if payload.channel_id != PHOTO_CHANNEL or payload.member.bot: return
-    if not any(r.id in ADMIN_ROLES for r in payload.member.roles): return
-    
-    msg = await bot.get_channel(payload.channel_id).fetch_message(payload.message_id)
-    if str(payload.emoji) == "✅":
-        update_db(msg.author.id, "promo", 10)
-        await msg.author.send("✅ **تم حساب 10 نقاط ترقية لك.**")
-    elif str(payload.emoji) == "❌":
-        await msg.author.send("❌ **تم رفض الصورة. يرجى مراجعة الإدارة.**")
+    if ctx.guild.icon:
+        embed.set_thumbnail(url=ctx.guild.icon.url)
 
-@bot.command()
-async def توب(ctx):
-    cursor.execute("SELECT uid, interaction, promo FROM users ORDER BY promo DESC LIMIT 10")
-    data = cursor.fetchall()
-    embed = discord.Embed(title="👑 توب الإداريين والترقية", color=0x2b2d31)
-    for row in data:
-        embed.add_field(name=f"عضو {row[0]}", value=f"تفاعل: {row[1]} | ترقية: {row[2]}", inline=False)
-    await ctx.send(embed=embed)
+    embed.set_footer(text="Role System")
 
-@bot.command()
-async def تصفير_الكل(ctx):
-    if ctx.channel.id == CONTROL_CHANNEL:
-        cursor.execute("UPDATE users SET interaction = 0, promo = 0")
-        conn.commit()
-        await ctx.send("✅ **تم تصفير النقاط للجميع.**")
+    await ctx.send(embed=embed, view=GameRoleView())
+
+
+@role_panel.error
+async def role_panel_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        if ctx.channel.id == ALLOWED_CHANNEL:
+            await ctx.send("❌ هذا الأمر للإدارة فقط.")
+
+
+# =========================
+# Run Bot
+# =========================
 
 keep_alive()
-bot.run(os.getenv('DISCORD_TOKEN'))
+
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN is not set.")
+
+bot.run(TOKEN)
