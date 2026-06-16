@@ -5,10 +5,6 @@ import os
 from flask import Flask
 from threading import Thread
 
-# =========================
-# Web Server for UptimeRobot
-# =========================
-
 app = Flask("")
 
 @app.route("/")
@@ -22,14 +18,13 @@ def keep_alive():
     Thread(target=run_web).start()
 
 
-# =========================
-# Bot Settings
-# =========================
-
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-GAME_ROLE_ID = 1516370348717772971
-REQUIRED_ROLE_ID = 1478970736717598840
+PANEL_MANAGER_ROLE_ID = 1478970736717598840
+
+ASSITO_ROLE_ID = 1516370348717772971
+UFC_ROLE_ID = 1515651907778121828
+
 PANEL_COLOR = 0xE10600
 
 intents = discord.Intents.default()
@@ -39,81 +34,85 @@ intents.members = True
 bot = commands.Bot(command_prefix="", intents=intents)
 
 
-# =========================
-# Role Button View
-# =========================
-
-class GameRoleView(View):
+class AssitoRoleView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="خذ رتبة 𝐀𝐬𝐬𝐢𝐭𝐨 𝐂𝐨𝐫𝐬𝐚",
+        label="خذ رتبة Assito Corsa",
         style=discord.ButtonStyle.danger,
         emoji="🏎️",
-        custom_id="assetto_corsa_role_button"
+        custom_id="assito_corsa_role_button"
     )
-    async def assetto_corsa_role(self, interaction: discord.Interaction, button: Button):
-        guild = interaction.guild
-        member = interaction.user
-
-        role = guild.get_role(GAME_ROLE_ID)
-
-        if role is None:
-            await interaction.response.send_message(
-                "❌ لم أجد رتبة اللعبة. تأكد أن آيدي الرتبة صحيح.",
-                ephemeral=True
-            )
-            return
-
-        if role in member.roles:
-            await interaction.response.send_message(
-                "✅ أنت تملك رتبة 𝐀𝐬𝐬𝐢𝐭𝐨 𝐂𝐨𝐫𝐬𝐚 بالفعل.",
-                ephemeral=True
-            )
-            return
-
-        try:
-            await member.add_roles(role, reason="Assetto Corsa role panel")
-            await interaction.response.send_message(
-                "✅ تم إعطاؤك رتبة 𝐀𝐬𝐬𝐢𝐭𝐨 𝐂𝐨𝐫𝐬𝐚 بنجاح.",
-                ephemeral=True
-            )
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ لا أستطيع إعطاء الرتبة. تأكد أن رتبة البوت أعلى من رتبة اللعبة وأن لديه صلاحية Manage Roles.",
-                ephemeral=True
-            )
-        except discord.HTTPException:
-            await interaction.response.send_message(
-                "❌ صار خطأ أثناء إعطاء الرتبة، حاول مرة ثانية.",
-                ephemeral=True
-            )
+    async def assito_role(self, interaction: discord.Interaction, button: Button):
+        await give_role(interaction, ASSITO_ROLE_ID)
 
 
-# =========================
-# Events
-# =========================
+class UFCRoleView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="خذ رتبة UFC",
+        style=discord.ButtonStyle.danger,
+        emoji="🥊",
+        custom_id="ufc_role_button"
+    )
+    async def ufc_role(self, interaction: discord.Interaction, button: Button):
+        await give_role(interaction, UFC_ROLE_ID)
+
+
+async def give_role(interaction: discord.Interaction, role_id: int):
+    guild = interaction.guild
+    member = interaction.user
+    role = guild.get_role(role_id)
+
+    if role is None:
+        await interaction.response.send_message(
+            "❌ لم أجد الرتبة. تأكد من آيدي الرتبة.",
+            ephemeral=True
+        )
+        return
+
+    if role in member.roles:
+        await interaction.response.send_message("✅", ephemeral=True)
+        return
+
+    try:
+        await member.add_roles(role, reason="Game role button")
+        await interaction.response.send_message("✅", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ لا أقدر أعطيك الرتبة. تأكد أن رتبة البوت أعلى من الرتبة ومعه صلاحية Manage Roles.",
+            ephemeral=True
+        )
+    except discord.HTTPException:
+        await interaction.response.send_message(
+            "❌ صار خطأ، حاول مرة ثانية.",
+            ephemeral=True
+        )
+
+
+def can_send_panel(ctx):
+    return any(role.id == PANEL_MANAGER_ROLE_ID for role in ctx.author.roles)
+
 
 @bot.event
 async def on_ready():
-    bot.add_view(GameRoleView())
+    bot.add_view(AssitoRoleView())
+    bot.add_view(UFCRoleView())
     print(f"Logged in as {bot.user}")
 
 
-# =========================
-# Commands
-# =========================
-
 @bot.command(name="S")
-async def role_panel(ctx):
-    if not any(role.id == REQUIRED_ROLE_ID for role in ctx.author.roles):
+async def assito_panel(ctx):
+    if not can_send_panel(ctx):
         return
 
     embed = discord.Embed(
-        title="🏎️ 𝐀𝐬𝐬𝐢𝐭𝐨 𝐂𝐨𝐫𝐬𝐚",
+        title="🏎️ Assito Corsa",
         description=(
-            "**الرتبة الجديدة للعبة 𝐀𝐬𝐬𝐢𝐭𝐨 𝐂𝐨𝐫𝐬𝐚**\n\n"
+            "**الرتبة الجديدة للعبة Assito Corsa**\n\n"
             "اضغط على الزر بالأسفل وخذ الرتبة عشان يطلع لك كل شيء يخص اللعبة."
         ),
         color=PANEL_COLOR
@@ -124,12 +123,32 @@ async def role_panel(ctx):
 
     embed.set_footer(text="Role System")
 
-    await ctx.send(embed=embed, view=GameRoleView())
+    message = await ctx.send(embed=embed, view=AssitoRoleView())
+    await message.add_reaction("✅")
 
 
-# =========================
-# Run Bot
-# =========================
+@bot.command(name="U")
+async def ufc_panel(ctx):
+    if not can_send_panel(ctx):
+        return
+
+    embed = discord.Embed(
+        title="🥊 𝐔𝐅𝐂",
+        description=(
+            "**لمحبين 𝐔𝐅𝐂 وفرنا لكم هذه الرتبة**\n\n"
+            "اضغط الزر وخذ الرتبة وتابع كل ما يخص اليو اف سي."
+        ),
+        color=PANEL_COLOR
+    )
+
+    if ctx.guild.icon:
+        embed.set_thumbnail(url=ctx.guild.icon.url)
+
+    embed.set_footer(text="Role System")
+
+    message = await ctx.send(embed=embed, view=UFCRoleView())
+    await message.add_reaction("✅")
+
 
 keep_alive()
 
