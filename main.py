@@ -93,8 +93,8 @@ ADMIN_RANK_ORDER = [
 # SETTINGS
 # =========================
 
-TEXT_POINTS = 12
-DOUBLE_TEXT_POINTS = 24
+TEXT_POINTS = 15
+DOUBLE_TEXT_POINTS = 30
 VOICE_POINTS_EVERY_10_MINUTES = 5
 DOUBLE_VOICE_POINTS_EVERY_10_MINUTES = 10
 IMAGE_POINTS = 10
@@ -770,6 +770,7 @@ async def handle_message_points(message: discord.Message):
         return
     amount = DOUBLE_TEXT_POINTS if double_active() else TEXT_POINTS
     change_points_value(POINT_FILE, message.author.id, amount)
+    change_points_value(REQUIRE_FILE, message.author.id, amount)
 
 
 async def handle_protection(message: discord.Message) -> bool:
@@ -824,7 +825,9 @@ async def award_voice_points():
                 count = int(elapsed // 10)
                 if count <= 0:
                     continue
-                change_points_value(POINT_FILE, member.id, amount * count)
+                total_amount = amount * count
+                change_points_value(POINT_FILE, member.id, total_amount)
+                change_points_value(REQUIRE_FILE, member.id, total_amount)
                 voice_times[uid] += datetime.timedelta(minutes=10 * count)
 
 
