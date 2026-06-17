@@ -50,6 +50,7 @@ POINT_CHANNEL = 1497204458680090779
 INTERACTION_PANEL_CHANNEL = 1497642199859593388
 KEYWORD_CHANNEL = 1497911384191668254
 PROMOTION_REQUEST_CHANNEL = 1497203612432990259
+HACKED_PROTECTION_CHANNEL = 1514000444349878483
 
 POINTS_ACTION_LOG_CHANNEL = 1516309944129818735
 SPAM_LOG_CHANNEL = 1516295642824310824
@@ -102,6 +103,7 @@ TEXT_POINTS_BLOCKED_CHANNELS = {POINT_CHANNEL, KEYWORD_CHANNEL}
 SPAM_MESSAGE_LIMIT_PER_SECOND = 10
 SPAM_ALERT_COOLDOWN_SECONDS = 300
 LOGIN_RETRY_SECONDS = 1800
+PROTECTION_TIMEOUT_DAYS = 7
 
 
 # =========================
@@ -770,6 +772,30 @@ async def handle_message_points(message: discord.Message):
     change_points_value(POINT_FILE, message.author.id, amount)
 
 
+async def handle_protection(message: discord.Message) -> bool:
+    if message.channel.id != HACKED_PROTECTION_CHANNEL:
+        return False
+    if not isinstance(message.author, discord.Member):
+        return False
+    if is_admin(message.author) or has_any_role(message.author, POINT_ROLES | IMAGE_REVIEW_ROLES | PROMOTION_REVIEW_ROLES):
+        return False
+
+    try:
+        await message.delete()
+    except discord.HTTPException:
+        pass
+
+    until = now_utc() + datetime.timedelta(days=PROTECTION_TIMEOUT_DAYS)
+    try:
+        await message.author.timeout(until, reason="نظام الحماية: إرسال في روم محمي")
+    except discord.Forbidden:
+        pass
+    except discord.HTTPException:
+        pass
+
+    return True
+
+
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     if not is_points_member(member):
@@ -843,6 +869,8 @@ async def double_off(ctx: commands.Context):
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
+        return
+    if await handle_protection(message):
         return
     if message.channel.id == PROMOTION_REQUEST_CHANNEL and message.content.strip() == "ترقية":
         await send_promotion_request(message)
