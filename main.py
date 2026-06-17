@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import os
@@ -38,6 +39,7 @@ def keep_alive():
 intents = discord.Intents.all()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+views_registered = False
 
 
 # =========================
@@ -98,6 +100,8 @@ IMAGE_POINTS = 10
 
 TEXT_POINTS_BLOCKED_CHANNELS = {POINT_CHANNEL, KEYWORD_CHANNEL}
 SPAM_MESSAGE_LIMIT_PER_SECOND = 10
+SPAM_ALERT_COOLDOWN_SECONDS = 300
+LOGIN_RETRY_SECONDS = 1800
 
 
 # =========================
@@ -224,7 +228,43 @@ def build_promotion_panel_embed(guild: discord.Guild):
     return apply_guild_brand(embed, guild)
 
 
+async def send_promotion_request(source):
+    user = source.author if hasattr(source, "author") else source.user
+    guild = source.guild
+    channel = source.channel
+
+    if not isinstance(user, discord.Member) or not is_points_member(user):
+        if hasattr(source, "response"):
+            await source.response.send_message("❌ نظام طلب الترقية مخصص للرتب المعتمدة في التفاعل فقط.", ephemeral=True)
+        return
+
+    current_role, next_role = get_admin_rank_progress(user)
+    if not next_role:
+        if hasattr(source, "response"):
+            await source.response.send_message("✅ أنت على أعلى رتبة إدارية حاليًا.", ephemeral=True)
+        return
+
+    total, req = get_points(user.id)
+    embed = discord.Embed(
+        title="طلب ترقية جديد",
+        description=f"تم إرسال طلب ترقية من {user.mention}.",
+        color=discord.Color.blurple(),
+        timestamp=now_utc(),
+    )
+    embed.add_field(name="نقاط التفاعل", value=f"`{total}`", inline=True)
+    embed.add_field(name="نقاط الترقية", value=f"`{req}`", inline=True)
+    embed.add_field(name="الرتبة الحالية", value=current_role.mention if current_role else "لا توجد رتبة إدارية", inline=True)
+    embed.add_field(name="الرتبة المطلوبة", value=next_role.mention, inline=True)
+    embed.set_thumbnail(url=user.display_avatar.url)
+    apply_guild_brand(embed, guild)
+
+    await channel.send(embed=embed, view=PromotionReviewView(user.id, current_role.id if current_role else None, next_role.id))
+    if hasattr(source, "response"):
+        await source.response.send_message("✅ تم إرسال طلب ترقيتك للمراجعة.", ephemeral=True)
+
+
 async def send_points_action_log(guild: discord.Guild, moderator: discord.Member, target: discord.Member | None, action: str, amount: int | None = None, new_value: int | None = None):
+    return
     channel = guild.get_channel(POINTS_ACTION_LOG_CHANNEL) or bot.get_channel(POINTS_ACTION_LOG_CHANNEL)
     if not channel:
         return
@@ -328,7 +368,8 @@ class InteractionPanel(discord.ui.View):
 
     @discord.ui.button(label="التوب", style=discord.ButtonStyle.success, custom_id="points:top", row=0)
     async def top_points(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=build_top_embed(interaction.guild), ephemeral=False)
+        await interaction.response.send_message("✅ تم إرسال التوب، وسيتم حذفه بعد 10 دقائق.", ephemeral=True)
+        await send_temporary_top(interaction.channel, interaction.guild)
 
     @discord.ui.button(label="زيادة تفاعل", style=discord.ButtonStyle.secondary, custom_id="points:add_interaction", row=1)
     async def add_interaction(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -379,23 +420,59 @@ class InteractionPanel(discord.ui.View):
 
 def build_top_embed(guild: discord.Guild):
     points = load_json(POINT_FILE)
-    embed = discord.Embed(title="أعلى المتفاعلين", color=discord.Color.gold(), timestamp=now_utc())
-    valid_points = []
+    requirements = load_json(REQUIRE_FILE)
+    embed = discord.Embed(title="توب التفاعل والترقية", color=discord.Color.gold(), timestamp=now_utc())
+
+    interaction_points = []
+    promotion_points = []
+
     for uid, value in points.items():
         member = guild.get_member(int(uid))
         if member and is_points_member(member):
-            valid_points.append((uid, value))
-    if not valid_points:
+            interaction_points.append((uid, value))
+
+    for uid, value in requirements.items():
+        member = guild.get_member(int(uid))
+        if member and is_points_member(member):
+            promotion_points.append((uid, value))
+
+    if not interaction_points and not promotion_points:
         embed.description = "لا توجد نقاط حاليًا."
         return apply_guild_brand(embed, guild)
+
     medals = ["🥇", "🥈", "🥉"]
-    lines = []
-    for index, (uid, pts) in enumerate(sorted(valid_points, key=lambda item: item[1], reverse=True)[:10], start=1):
+
+    interaction_lines = []
+    for index, (uid, pts) in enumerate(sorted(interaction_points, key=lambda item: item[1], reverse=True)[:10], start=1):
         member = guild.get_member(int(uid))
         prefix = medals[index - 1] if index <= 3 else f"`#{index}`"
-        lines.append(f"{prefix} {member.mention} - `{pts}` نقطة")
-    embed.description = "\n".join(lines)
+        interaction_lines.append(f"{prefix} {member.mention} - `{pts}` نقطة")
+
+    promotion_lines = []
+    for index, (uid, pts) in enumerate(sorted(promotion_points, key=lambda item: item[1], reverse=True)[:10], start=1):
+        member = guild.get_member(int(uid))
+        prefix = medals[index - 1] if index <= 3 else f"`#{index}`"
+        promotion_lines.append(f"{prefix} {member.mention} - `{pts}` نقطة")
+
+    embed.add_field(
+        name="توب نقاط التفاعل",
+        value="\n".join(interaction_lines) if interaction_lines else "لا توجد نقاط تفاعل.",
+        inline=False,
+    )
+    embed.add_field(
+        name="توب نقاط الترقية",
+        value="\n".join(promotion_lines) if promotion_lines else "لا توجد نقاط ترقية.",
+        inline=False,
+    )
     return apply_guild_brand(embed, guild)
+
+
+async def send_temporary_top(channel: discord.abc.Messageable, guild: discord.Guild):
+    message = await channel.send(embed=build_top_embed(guild))
+    try:
+        await message.delete(delay=600)
+    except discord.HTTPException:
+        pass
 
 
 @bot.command(name="لوحة")
@@ -424,6 +501,18 @@ class RejectImageModal(discord.ui.Modal, title="سبب رفض الصورة"):
 
     async def on_submit(self, interaction: discord.Interaction):
         target = interaction.guild.get_member(self.target_id)
+        embed = discord.Embed(
+            title="طلب صورة مرفوض",
+            description=f"**سبب الرفض:** {self.reason.value}",
+            color=discord.Color.red(),
+            timestamp=now_utc(),
+        )
+        if target:
+            embed.add_field(name="الإداري", value=target.mention, inline=True)
+            embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name="المراجع", value=interaction.user.mention, inline=True)
+        await interaction.response.edit_message(embed=apply_guild_brand(embed, interaction.guild), view=None)
+        return
         if target:
             try:
                 await target.send(f"❌ تم رفض صورتك.\n**السبب:** {self.reason.value}")
@@ -567,6 +656,9 @@ class PromotionRequestPanel(discord.ui.View):
         embed.add_field(name="الرتبة المطلوبة", value=next_role.mention, inline=True)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         apply_guild_brand(embed, interaction.guild)
+        await interaction.response.send_message("✅ تم إرسال طلب ترقيتك للمراجعة.", ephemeral=True)
+        await interaction.channel.send(embed=embed, view=PromotionReviewView(interaction.user.id, current_role.id if current_role else None, next_role.id))
+        return
         try:
             await interaction.message.delete()
         except discord.HTTPException:
@@ -590,6 +682,7 @@ async def promotion_panel(ctx: commands.Context):
 
 voice_times: dict[str, datetime.datetime] = {}
 spam_tracker: dict[int, list[float]] = {}
+spam_alert_times: dict[int, float] = {}
 
 
 async def check_spam(message: discord.Message) -> bool:
@@ -600,6 +693,11 @@ async def check_spam(message: discord.Message) -> bool:
     spam_tracker[message.author.id] = timestamps
     if len(timestamps) <= SPAM_MESSAGE_LIMIT_PER_SECOND:
         return False
+    last_alert = spam_alert_times.get(message.author.id, 0)
+    if current - last_alert < SPAM_ALERT_COOLDOWN_SECONDS:
+        return True
+    spam_alert_times[message.author.id] = current
+    return True
     channel = message.guild.get_channel(SPAM_LOG_CHANNEL) or bot.get_channel(SPAM_LOG_CHANNEL)
     if channel:
         embed = discord.Embed(title="تنبيه سبام نقاط", color=discord.Color.red(), timestamp=now_utc())
@@ -616,6 +714,22 @@ async def handle_message_points(message: discord.Message):
 
     has_image = any(a.content_type and a.content_type.startswith("image/") for a in message.attachments)
     if message.channel.id == KEYWORD_CHANNEL and has_image:
+        embed = discord.Embed(
+            title="إضافة نقاط",
+            description=(
+                f"تم استلام صورة من {message.author.mention}\n\n"
+                f"النقاط المرشحة: `{IMAGE_POINTS}` نقاط ترقية\n"
+                "الحالة: بانتظار القبول أو الرفض"
+            ),
+            color=discord.Color.gold(),
+            timestamp=now_utc(),
+        )
+        embed.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url)
+        embed.add_field(name="العضو", value=message.author.mention, inline=True)
+        embed.add_field(name="النقاط", value=f"`{IMAGE_POINTS}`", inline=True)
+        apply_guild_brand(embed, message.guild)
+        await message.channel.send(content=message.author.mention, embed=embed, view=ImageReviewView(message.author.id))
+        return
         image_attachment = next((a for a in message.attachments if a.content_type and a.content_type.startswith("image/")), None)
         review_file = None
         image_url = image_attachment.url if image_attachment else None
@@ -709,7 +823,7 @@ async def show_points(ctx: commands.Context):
 @bot.command(name="top")
 async def top_points_command(ctx: commands.Context):
     if ctx.channel.id == INTERACTION_PANEL_CHANNEL:
-        await ctx.send(embed=build_top_embed(ctx.guild))
+        await send_temporary_top(ctx.channel, ctx.guild)
 
 
 @bot.command(name="double")
@@ -730,14 +844,20 @@ async def double_off(ctx: commands.Context):
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
+    if message.channel.id == PROMOTION_REQUEST_CHANNEL and message.content.strip() == "ترقية":
+        await send_promotion_request(message)
+        return
     await handle_message_points(message)
     await bot.process_commands(message)
 
 
 @bot.event
 async def on_ready():
-    bot.add_view(InteractionPanel())
-    bot.add_view(PromotionRequestPanel())
+    global views_registered
+    if not views_registered:
+        bot.add_view(InteractionPanel())
+        bot.add_view(PromotionRequestPanel())
+        views_registered = True
     if not award_voice_points.is_running():
         award_voice_points.start()
     print(f"Logged in as {bot.user}")
@@ -746,7 +866,22 @@ async def on_ready():
 keep_alive()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-if DISCORD_TOKEN:
-    bot.run(DISCORD_TOKEN)
-else:
+
+
+async def run_discord_bot():
+    while True:
+        try:
+            await bot.start(DISCORD_TOKEN)
+            break
+        except discord.HTTPException as exc:
+            if getattr(exc, "status", None) == 429:
+                print(f"Discord rate limit while logging in. Retrying in {LOGIN_RETRY_SECONDS} seconds.")
+                await asyncio.sleep(LOGIN_RETRY_SECONDS)
+                continue
+            raise
+
+
+if not DISCORD_TOKEN:
     print("DISCORD_TOKEN is missing")
+else:
+    asyncio.run(run_discord_bot())
