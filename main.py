@@ -82,7 +82,11 @@ ADMIN_RANK_ORDER = [
     1485549583861022802,
     1480649204593332324,
     1485551861334540378,
+    1518903745637908540,
+    1518903845198237807,
     1488591572042780725,
+    1518903808778960896,
+    1518903917927338074,
     1480818082426392637,
     1480390711651336244,
     1480391201227280535,
@@ -97,7 +101,7 @@ TEXT_POINTS = 15
 DOUBLE_TEXT_POINTS = 30
 VOICE_POINTS_EVERY_10_MINUTES = 5
 DOUBLE_VOICE_POINTS_EVERY_10_MINUTES = 10
-IMAGE_POINTS = 10
+IMAGE_POINTS = 25
 
 TEXT_POINTS_BLOCKED_CHANNELS = {POINT_CHANNEL, KEYWORD_CHANNEL}
 SPAM_MESSAGE_LIMIT_PER_SECOND = 10
@@ -781,16 +785,16 @@ async def handle_protection(message: discord.Message) -> bool:
     if is_admin(message.author) or has_any_role(message.author, POINT_ROLES | IMAGE_REVIEW_ROLES | PROMOTION_REVIEW_ROLES):
         return False
 
-    try:
-        await message.delete()
-    except discord.HTTPException:
-        pass
-
     until = now_utc() + datetime.timedelta(days=PROTECTION_TIMEOUT_DAYS)
     try:
         await message.author.timeout(until, reason="نظام الحماية: إرسال في روم محمي")
     except discord.Forbidden:
         pass
+    except discord.HTTPException:
+        pass
+
+    try:
+        await message.delete()
     except discord.HTTPException:
         pass
 
