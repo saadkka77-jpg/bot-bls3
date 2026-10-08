@@ -1992,7 +1992,7 @@ if __name__ == "__main__":
     keep_alive()
 
     try:
-        bot.run(TOKEN)
+        TOKEN = os.getenv("TASKS_BOT_TOKEN")
 
     finally:
         DB.close()
