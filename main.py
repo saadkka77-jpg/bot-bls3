@@ -19,46 +19,32 @@ from discord.ext import commands
 
 BOT_NAME = "ميلان بوت"
 
-# التوكن يقرأ من Environment ولا يكتب داخل الكود.
-TOKEN = os.getenv("MILAN_BOT_TOKEN", "").strip()
+# آيدي سيرفرك مثبت هنا، لا يحتاج متغيرًا في Render.
+GUILD_ID = 1556038627170066463
 
-# آيدي السيرفر يقرأ من Environment.
-GUILD_RAW = os.getenv("DISCORD_GUILD_ID", "").strip()
-VALUE: 1556038627170066463
+# التوكن مخفي داخل Environment في Render.
+TOKEN = os.getenv("MILAN_BOT_TOKEN", "").strip()
 
 if not TOKEN:
     raise SystemExit(
-        "ناقص MILAN_BOT_TOKEN في Environment: "
-        "ضع توكن البوت الحقيقي كقيمة."
+        "ناقص MILAN_BOT_TOKEN في Environment. "
+        "ضع توكن البوت الحقيقي في قيمة المتغير."
     )
 
-if not GUILD_RAW.isdecimal() or not 17 <= len(GUILD_RAW) <= 20:
-    raise SystemExit(
-        "ناقص DISCORD_GUILD_ID أو قيمته غير صالحة: "
-        "ضع آيدي السيرفر فقط."
-    )
-
-GUILD_ID = int(GUILD_RAW)
-
-# أضف آيديات رتب المراجعين بين الأقواس.
+# ضع آيديات رتب المراجعين بين الأقواس.
 # مثال: REVIEWER_ROLE_IDS = {123456789012345678}
-# إذا تركتها فارغة، المراجعة لأصحاب:
-# Administrator أو Manage Server.
+# فارغ = المراجعة لأصحاب Administrator أو Manage Server.
 REVIEWER_ROLE_IDS = set()
 
-# منع الشخص من قبول أو رفض مهمته بنفسه.
 ALLOW_SELF_REVIEW = False
-
-# حد حجم الصورة بالميجابايت.
 MAX_IMAGE_MB = 10
 
-# صفحة ويب للاستضافة على Render.
+# تشغيل صفحة الاستضافة.
 ENABLE_WEB = os.getenv("ENABLE_WEB", "true").lower() == "true"
 
-# روم القرارات ولوحة إحصائيات الإداريين.
 LOG_CHANNEL_ID = 1556039742485827707
 
-# /نقاط يعمل في هذين الرومين فقط.
+# أمر /نقاط يعمل في هذين الرومين فقط.
 POINTS_CHANNEL_IDS = {
     1556039842230566949,
     1556039678774214768,
@@ -66,7 +52,7 @@ POINTS_CHANNEL_IDS = {
 
 SCENARIO_CHANNEL_ID = 1556039764996522074
 
-# points = النقاط المضافة عند قبول المهمة.
+# نقاط المهمة عند قبولها.
 TASK_CHANNELS = {
     1556039749360422922: {
         "name": "مهام الباند",
@@ -92,12 +78,12 @@ TASK_CHANNELS = {
 
 
 # ======================================================
-# التحقق من المكتبة والإعدادات
+# التحقق والتخزين
 # ======================================================
 
 if not hasattr(discord.ui, "FileUpload"):
     raise RuntimeError(
-        'حدّث المكتبة: python -m pip install -U "discord.py>=2.7,<3"'
+        "المكتبة قديمة. ثبّت discord.py إصدار 2.7 أو أحدث."
     )
 
 if not 1 <= MAX_IMAGE_MB <= 20:
@@ -105,16 +91,8 @@ if not 1 <= MAX_IMAGE_MB <= 20:
 
 for section in TASK_CHANNELS.values():
     if type(section["points"]) is not int or section["points"] < 0:
-        raise ValueError(
-            "نقاط الأقسام يجب أن تكون أعدادًا صحيحة غير سالبة"
-        )
+        raise ValueError("نقاط الأقسام يجب أن تكون أعدادًا صحيحة غير سالبة")
 
-
-# ======================================================
-# حفظ المهام والصور
-# ======================================================
-
-# يمكن تغيير مكان التخزين بمتغير MILAN_DATA_DIR.
 BASE = Path(
     os.getenv(
         "MILAN_DATA_DIR",
@@ -126,7 +104,6 @@ IMAGES = BASE / "images"
 IMAGES.mkdir(parents=True, exist_ok=True)
 
 DB = sqlite3.connect(BASE / "tasks.sqlite")
-
 DB.execute("PRAGMA journal_mode=WAL")
 
 DB.execute("""
@@ -144,7 +121,6 @@ DB.execute("""
 """)
 
 DB.commit()
-
 LOCKS = {}
 
 
@@ -174,11 +150,10 @@ def load(task_id):
 
 
 def all_tasks():
-    records = DB.execute(
-        "SELECT payload FROM tasks"
-    ).fetchall()
-
-    return [json.loads(record[0]) for record in records]
+    return [
+        json.loads(row[0])
+        for row in DB.execute("SELECT payload FROM tasks").fetchall()
+    ]
 
 
 def setting(key, value=None):
@@ -211,21 +186,16 @@ def clean(value):
 def error_log(error):
     print(
         f"خطأ: {type(error).__name__} "
-        f"| code={getattr(error, 'code', '-')}"
+        f"| code={getattr(error, 'code', '-')}",
+        flush=True,
     )
 
 
 async def tell(interaction, text):
     if not interaction.response.is_done():
-        await interaction.response.send_message(
-            text,
-            ephemeral=True,
-        )
+        await interaction.response.send_message(text, ephemeral=True)
     else:
-        await interaction.followup.send(
-            text,
-            ephemeral=True,
-        )
+        await interaction.followup.send(text, ephemeral=True)
 
 
 # ======================================================
@@ -245,14 +215,10 @@ def check_context(interaction):
         interaction.guild_id != GUILD_ID
         or not isinstance(interaction.user, discord.Member)
     ):
-        raise ValueError(
-            "هذا البوت يعمل داخل السيرفر المحدد فقط."
-        )
+        raise ValueError("هذا البوت يعمل داخل السيرفر المحدد فقط.")
 
     if not bot.initialized:
-        raise ValueError(
-            "البوت يجهز الآن. أعد المحاولة بعد قليل."
-        )
+        raise ValueError("البوت يجهز الآن. أعد المحاولة بعد قليل.")
 
 
 def check_draft(task, interaction):
@@ -264,14 +230,10 @@ def check_draft(task, interaction):
         or task["channel"] != interaction.channel_id
         or task["status"] != "draft"
     ):
-        raise ValueError(
-            "المعاينة غير متاحة لك أو سبق إرسالها."
-        )
+        raise ValueError("المعاينة غير متاحة لك أو سبق إرسالها.")
 
     if now().timestamp() - task["created"] > 86400:
-        raise ValueError(
-            "انتهت صلاحية المسودة. استخدم الأمر من جديد."
-        )
+        raise ValueError("انتهت صلاحية المسودة. استخدم الأمر من جديد.")
 
 
 def check_review(task, interaction):
@@ -287,29 +249,22 @@ def check_review(task, interaction):
         raise ValueError("بطاقة المهمة غير صالحة.")
 
     if not reviewer(interaction.user):
-        raise ValueError(
-            "ليس لديك صلاحية مراجعة المهام."
-        )
+        raise ValueError("ليس لديك صلاحية مراجعة المهام.")
 
     if not ALLOW_SELF_REVIEW and task["user"] == interaction.user.id:
-        raise ValueError(
-            "لا يمكنك مراجعة مهمتك بنفسك."
-        )
+        raise ValueError("لا يمكنك مراجعة مهمتك بنفسك.")
 
     if task["status"] != "pending":
-        raise ValueError(
-            "تم اتخاذ قرار لهذه المهمة مسبقًا."
-        )
+        raise ValueError("تم اتخاذ قرار لهذه المهمة مسبقًا.")
 
 
 # ======================================================
-# حساب النقاط والإحصائيات
+# النقاط والإحصائيات
 # ======================================================
 
 def submitted():
     return [
-        task
-        for task in all_tasks()
+        task for task in all_tasks()
         if task["status"] in ("pending", "accepted", "rejected")
     ]
 
@@ -317,33 +272,19 @@ def submitted():
 def user_stats(user_id, records=None):
     records = submitted() if records is None else records
 
-    own = [
-        task for task in records
-        if task["user"] == user_id
-    ]
-
-    accepted = [
-        task for task in own
-        if task["status"] == "accepted"
-    ]
+    own = [task for task in records if task["user"] == user_id]
+    accepted = [task for task in own if task["status"] == "accepted"]
 
     return {
         "user": user_id,
         "total": len(own),
         "accepted": len(accepted),
-        "rejected": sum(
-            task["status"] == "rejected" for task in own
-        ),
-        "pending": sum(
-            task["status"] == "pending" for task in own
-        ),
-        "points": sum(
-            task.get("awarded", 0) for task in accepted
-        ),
+        "rejected": sum(task["status"] == "rejected" for task in own),
+        "pending": sum(task["status"] == "pending" for task in own),
+        "points": sum(task.get("awarded", 0) for task in accepted),
         "categories": {
             channel_id: sum(
-                task["channel"] == channel_id
-                for task in accepted
+                task["channel"] == channel_id for task in accepted
             )
             for channel_id in TASK_CHANNELS
         },
@@ -385,11 +326,7 @@ def points_embed(user_id):
         ("المرفوضة", "rejected"),
         ("بانتظار المراجعة", "pending"),
     ]:
-        embed.add_field(
-            name=name,
-            value=str(stats[key]),
-            inline=True,
-        )
+        embed.add_field(name=name, value=str(stats[key]), inline=True)
 
     embed.add_field(
         name="المقبولة حسب القسم",
@@ -400,16 +337,12 @@ def points_embed(user_id):
         inline=False,
     )
 
-    embed.set_footer(
-        text=f"{BOT_NAME} • النقاط للمهام المقبولة فقط"
-    )
-
+    embed.set_footer(text=f"{BOT_NAME} • النقاط للمهام المقبولة فقط")
     return embed
 
 
 def stats_embed(page=0):
     rows = ranking()
-
     pages = max(1, (len(rows) + 9) // 10)
     page = max(0, min(page, pages - 1))
 
@@ -419,12 +352,9 @@ def stats_embed(page=0):
         timestamp=now(),
         description=(
             f"الإداريون: **{len(rows)}**\n"
-            f"مجموع المهام المرسلة: "
-            f"**{sum(s['total'] for s in rows)}**\n"
-            f"مجموع المهام المقبولة: "
-            f"**{sum(s['accepted'] for s in rows)}**\n"
-            f"مجموع النقاط: "
-            f"**{sum(s['points'] for s in rows)}**\n\n"
+            f"مجموع المهام المرسلة: **{sum(s['total'] for s in rows)}**\n"
+            f"مجموع المهام المقبولة: **{sum(s['accepted'] for s in rows)}**\n"
+            f"مجموع النقاط: **{sum(s['points'] for s in rows)}**\n\n"
             "أعداد الأقسام أدناه تخص المهام المقبولة."
         ),
     )
@@ -443,10 +373,8 @@ def stats_embed(page=0):
             inline=False,
             value=(
                 f"<@{stats['user']}> | ⭐ **{stats['points']}** نقطة\n"
-                f"📨 المرسلة: {stats['total']} | "
-                f"✅ المقبولة: {stats['accepted']}\n"
-                f"❌ المرفوضة: {stats['rejected']} | "
-                f"⏳ الانتظار: {stats['pending']}\n"
+                f"📨 المرسلة: {stats['total']} | ✅ المقبولة: {stats['accepted']}\n"
+                f"❌ المرفوضة: {stats['rejected']} | ⏳ الانتظار: {stats['pending']}\n"
                 f"{counts}"
             ),
         )
@@ -457,10 +385,7 @@ def stats_embed(page=0):
             value="تظهر الإحصائيات بعد إرسال أول مهمة.",
         )
 
-    embed.set_footer(
-        text=f"{BOT_NAME} • صفحة {page + 1} من {pages}"
-    )
-
+    embed.set_footer(text=f"{BOT_NAME} • صفحة {page + 1} من {pages}")
     return embed
 
 
@@ -478,16 +403,12 @@ class StatsButton(discord.ui.Button):
             check_context(interaction)
 
             if not reviewer(interaction.user):
-                raise ValueError(
-                    "الإحصائيات متاحة للمراجعين فقط."
-                )
+                raise ValueError("الإحصائيات متاحة للمراجعين فقط.")
 
             page = 0
 
             if interaction.message and interaction.message.embeds:
-                footer = (
-                    interaction.message.embeds[0].footer.text or ""
-                )
+                footer = interaction.message.embeds[0].footer.text or ""
                 match = re.search(r"صفحة (\d+)", footer)
 
                 if match:
@@ -503,10 +424,7 @@ class StatsButton(discord.ui.Button):
 
         except Exception as error:
             error_log(error)
-            await tell(
-                interaction,
-                "تعذر تحديث الإحصائيات الآن.",
-            )
+            await tell(interaction, "تعذر تحديث الإحصائيات الآن.")
 
 
 class StatsView(discord.ui.View):
@@ -538,9 +456,7 @@ def image_extension(data):
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
 
-    raise ValueError(
-        "ارفع صورة PNG أو JPG أو GIF أو WEBP."
-    )
+    raise ValueError("ارفع صورة PNG أو JPG أو GIF أو WEBP.")
 
 
 def files_for(task):
@@ -572,9 +488,7 @@ def task_text(task, log=False):
     )
 
     if fields.get("description"):
-        text += (
-            f"**التفاصيل:** {clean(fields['description'])}\n"
-        )
+        text += f"**التفاصيل:** {clean(fields['description'])}\n"
 
     if fields.get("start"):
         text += (
@@ -596,11 +510,9 @@ def task_text(task, log=False):
         )
 
     if task["status"] == "accepted":
-        text += (
-            f"**نقاط المهمة:** +{task['awarded']}\n"
-        )
+        text += f"**نقاط المهمة:** +{task['awarded']}\n"
 
-    # سبب الرفض لا يظهر في الرومات أو اللوقات.
+    # سبب الرفض لا يضاف إلى البطاقة أو اللوقات.
     # يُرسل لصاحب المهمة بالخاص فقط.
 
     if log:
@@ -608,31 +520,21 @@ def task_text(task, log=False):
 
         text += (
             "\n### مجموع مهام الإداري\n"
-            f"**المرسلة:** {stats['total']} | "
-            f"**المقبولة:** {stats['accepted']}\n"
-            f"**المرفوضة:** {stats['rejected']} | "
-            f"**الانتظار:** {stats['pending']}\n"
+            f"**المرسلة:** {stats['total']} | **المقبولة:** {stats['accepted']}\n"
+            f"**المرفوضة:** {stats['rejected']} | **الانتظار:** {stats['pending']}\n"
             f"**مجموع النقاط:** {stats['points']}\n"
             "**المهمة الأصلية:** "
             f"https://discord.com/channels/{GUILD_ID}/"
             f"{task['channel']}/{task['message']}\n"
         )
 
-    text += (
-        f"\n-# {marker(task, 'log' if log else 'task')}"
-    )
-
+    text += f"\n-# {marker(task, 'log' if log else 'task')}"
     return text
 
 
 class ActionButton(discord.ui.Button):
     def __init__(
-        self,
-        task_id,
-        action,
-        label,
-        style,
-        disabled=False,
+        self, task_id, action, label, style, disabled=False
     ):
         super().__init__(
             custom_id=f"task:{action}:{task_id}",
@@ -661,18 +563,13 @@ def task_view(task, log=False):
     )
 
     box = discord.ui.Container(accent_colour=color)
-
-    box.add_item(
-        discord.ui.TextDisplay(task_text(task, log))
-    )
+    box.add_item(discord.ui.TextDisplay(task_text(task, log)))
 
     if task["images"]:
         gallery = discord.ui.MediaGallery()
 
         for name in task["images"]:
-            gallery.add_item(
-                media=f"attachment://{name}"
-            )
+            gallery.add_item(media=f"attachment://{name}")
 
         box.add_item(gallery)
 
@@ -680,44 +577,34 @@ def task_view(task, log=False):
         if task["status"] == "draft":
             options = [
                 (
-                    "add",
-                    "+ تعديل / إضافة صورة",
-                    discord.ButtonStyle.secondary,
-                    False,
+                    "add", "+ تعديل / إضافة صورة",
+                    discord.ButtonStyle.secondary, False
                 ),
                 (
-                    "form",
-                    "كتابة البيانات",
-                    discord.ButtonStyle.primary,
-                    False,
+                    "form", "كتابة البيانات",
+                    discord.ButtonStyle.primary, False
                 ),
                 (
-                    "send",
-                    "إرسال المهمة",
+                    "send", "إرسال المهمة",
                     discord.ButtonStyle.success,
-                    not bool(task["fields"].get("start")),
+                    not bool(task["fields"].get("start"))
                 ),
                 (
-                    "cancel",
-                    "إلغاء",
-                    discord.ButtonStyle.danger,
-                    False,
+                    "cancel", "إلغاء",
+                    discord.ButtonStyle.danger, False
                 ),
             ]
-
         else:
             options = [
                 (
-                    "accept",
-                    "قبول",
+                    "accept", "قبول",
                     discord.ButtonStyle.success,
-                    task["status"] != "pending",
+                    task["status"] != "pending"
                 ),
                 (
-                    "reject",
-                    "رفض",
+                    "reject", "رفض",
                     discord.ButtonStyle.danger,
-                    task["status"] != "pending",
+                    task["status"] != "pending"
                 ),
             ]
 
@@ -726,11 +613,7 @@ def task_view(task, log=False):
         for action, label, style, disabled in options:
             actions.add_item(
                 ActionButton(
-                    task["id"],
-                    action,
-                    label,
-                    style,
-                    disabled,
+                    task["id"], action, label, style, disabled
                 )
             )
 
@@ -750,7 +633,7 @@ async def show_preview(interaction, task):
 
 
 # ======================================================
-# حقول بيانات المهام
+# بيانات المهام
 # ======================================================
 
 def details_spec(task):
@@ -771,13 +654,12 @@ def details_spec(task):
 
 
 # ======================================================
-# نماذج رفع الصور والبيانات وسبب الرفض
+# النماذج
 # ======================================================
 
 class SafeModal(discord.ui.Modal):
     async def on_error(self, interaction, error):
         error_log(error)
-
         await tell(
             interaction,
             "تعذر إتمام العملية الآن. أعد المحاولة.",
@@ -810,10 +692,7 @@ class UploadModal(SafeModal):
         )
 
     async def on_submit(self, interaction):
-        lock = LOCKS.setdefault(
-            self.task_id,
-            asyncio.Lock(),
-        )
+        lock = LOCKS.setdefault(self.task_id, asyncio.Lock())
 
         if lock.locked():
             return await tell(
@@ -832,25 +711,19 @@ class UploadModal(SafeModal):
                 )
 
                 if not 1 <= len(self.upload.values) <= 2:
-                    raise ValueError(
-                        "اختر صورة أو صورتين."
-                    )
+                    raise ValueError("اختر صورة أو صورتين.")
 
                 names = []
 
-                for index, attachment in enumerate(
-                    self.upload.values
-                ):
+                for index, attachment in enumerate(self.upload.values):
                     content_type = attachment.content_type or ""
 
                     if (
                         not content_type.startswith("image/")
-                        or attachment.size
-                        > MAX_IMAGE_MB * 1024 * 1024
+                        or attachment.size > MAX_IMAGE_MB * 1024 * 1024
                     ):
                         raise ValueError(
-                            "ارفع صورة بحجم لا يتجاوز "
-                            f"{MAX_IMAGE_MB} ميجابايت."
+                            f"ارفع صورة بحجم لا يتجاوز {MAX_IMAGE_MB} ميجابايت."
                         )
 
                     data = await asyncio.wait_for(
@@ -859,9 +732,7 @@ class UploadModal(SafeModal):
                     )
 
                     if len(data) > MAX_IMAGE_MB * 1024 * 1024:
-                        raise ValueError(
-                            "الصورة أكبر من الحد المسموح."
-                        )
+                        raise ValueError("الصورة أكبر من الحد المسموح.")
 
                     extension = image_extension(data)
 
@@ -884,10 +755,7 @@ class UploadModal(SafeModal):
                         content=str(error)
                     )
                 else:
-                    await tell(
-                        interaction,
-                        str(error),
-                    )
+                    await tell(interaction, str(error))
 
 
 class DetailsModal(SafeModal):
@@ -905,8 +773,7 @@ class DetailsModal(SafeModal):
                 max_length=maximum,
                 style=(
                     discord.TextStyle.paragraph
-                    if paragraph
-                    else discord.TextStyle.short
+                    if paragraph else discord.TextStyle.short
                 ),
                 default=task["fields"].get(key),
             )
@@ -914,18 +781,12 @@ class DetailsModal(SafeModal):
             self.fields[key] = item
 
             self.add_item(
-                discord.ui.Label(
-                    text=label,
-                    component=item,
-                )
+                discord.ui.Label(text=label, component=item)
             )
 
     async def on_submit(self, interaction):
         try:
-            lock = LOCKS.setdefault(
-                self.task_id,
-                asyncio.Lock(),
-            )
+            lock = LOCKS.setdefault(self.task_id, asyncio.Lock())
 
             if lock.locked():
                 return await tell(
@@ -943,9 +804,7 @@ class DetailsModal(SafeModal):
                 }
 
                 if not all(values.values()):
-                    raise ValueError(
-                        "أكمل جميع الحقول."
-                    )
+                    raise ValueError("أكمل جميع الحقول.")
 
                 task["fields"] = values
                 save(task)
@@ -955,16 +814,10 @@ class DetailsModal(SafeModal):
                     thinking=True,
                 )
 
-                await show_preview(
-                    interaction,
-                    task,
-                )
+                await show_preview(interaction, task)
 
         except ValueError as error:
-            await tell(
-                interaction,
-                str(error),
-            )
+            await tell(interaction, str(error))
 
 
 class RejectModal(SafeModal):
@@ -997,37 +850,24 @@ class RejectModal(SafeModal):
             reason = self.reason.value.strip()
 
             if not reason:
-                raise ValueError(
-                    "اكتب سبب الرفض."
-                )
+                raise ValueError("اكتب سبب الرفض.")
 
             await decide(
-                interaction,
-                task,
-                "rejected",
-                reason,
+                interaction, task, "rejected", reason
             )
 
         except ValueError as error:
-            await tell(
-                interaction,
-                str(error),
-            )
+            await tell(interaction, str(error))
 
 
 # ======================================================
-# حفظ القرار والنقاط
+# القرارات والنقاط
 # ======================================================
 
-async def decide(
-    interaction,
-    task,
-    status,
-    reason="",
-):
+async def decide(interaction, task, status, reason=""):
     check_review(task, interaction)
 
-    # حفظ القرار قبل أول await يمنع المراجعة المزدوجة.
+    # الحفظ قبل أول await يمنع احتساب المهمة مرتين.
     task.update(
         status=status,
         reason=reason,
@@ -1035,8 +875,7 @@ async def decide(
         reviewed=now().timestamp(),
         awarded=(
             TASK_CHANNELS[task["channel"]]["points"]
-            if status == "accepted"
-            else 0
+            if status == "accepted" else 0
         ),
         dm_state="pending",
     )
@@ -1053,27 +892,14 @@ async def decide(
     save(task)
 
     if status == "accepted":
-        text = (
-            f"✅ تم القبول وإضافة {task['awarded']} نقطة."
-        )
+        text = f"✅ تم القبول وإضافة {task['awarded']} نقطة."
     else:
-        text = (
-            "❌ تم الرفض. السبب يرسل لصاحب المهمة "
-            "بالخاص فقط."
-        )
+        text = "❌ تم الرفض. السبب يرسل لصاحب المهمة بالخاص فقط."
 
     await tell(interaction, text)
 
 
-# ======================================================
-# معالجة أزرار المهام
-# ======================================================
-
-async def handle_action(
-    interaction,
-    task_id,
-    action,
-):
+async def handle_action(interaction, task_id, action):
     try:
         task = load(task_id)
 
@@ -1085,17 +911,11 @@ async def handle_action(
                     RejectModal(task_id)
                 )
             else:
-                await decide(
-                    interaction,
-                    task,
-                    "accepted",
-                )
+                await decide(interaction, task, "accepted")
+
             return
 
-        lock = LOCKS.setdefault(
-            task_id,
-            asyncio.Lock(),
-        )
+        lock = LOCKS.setdefault(task_id, asyncio.Lock())
 
         if lock.locked():
             return await tell(
@@ -1114,9 +934,7 @@ async def handle_action(
 
             elif action == "form":
                 if not task["images"]:
-                    raise ValueError(
-                        "أضف صورة أولًا."
-                    )
+                    raise ValueError("أضف صورة أولًا.")
 
                 await interaction.response.send_modal(
                     DetailsModal(task)
@@ -1127,34 +945,22 @@ async def handle_action(
                     not task["images"]
                     or not task["fields"].get("start")
                 ):
-                    raise ValueError(
-                        "أضف الصور وأكمل البيانات أولًا."
-                    )
+                    raise ValueError("أضف الصور وأكمل البيانات أولًا.")
 
                 task["status"] = (
-                    "cancelled"
-                    if action == "cancel"
-                    else "publishing"
+                    "cancelled" if action == "cancel" else "publishing"
                 )
-
                 save(task)
 
-                view = discord.ui.LayoutView(
-                    timeout=None
-                )
+                view = discord.ui.LayoutView(timeout=None)
 
                 text = (
                     "تم إلغاء المهمة."
                     if action == "cancel"
-                    else (
-                        "✅ تم استلام المهمة. "
-                        "يجري نشرها في الروم للمراجعة."
-                    )
+                    else "✅ تم استلام المهمة. يجري نشرها في الروم للمراجعة."
                 )
 
-                view.add_item(
-                    discord.ui.TextDisplay(text)
-                )
+                view.add_item(discord.ui.TextDisplay(text))
 
                 await interaction.response.edit_message(
                     view=view,
@@ -1162,10 +968,7 @@ async def handle_action(
                 )
 
     except ValueError as error:
-        await tell(
-            interaction,
-            str(error),
-        )
+        await tell(interaction, str(error))
 
     except Exception as error:
         error_log(error)
@@ -1181,21 +984,12 @@ async def handle_action(
 
 async def get_channel(channel_id):
     channel = bot.get_channel(channel_id)
-
-    return channel or await bot.fetch_channel(
-        channel_id
-    )
+    return channel or await bot.fetch_channel(channel_id)
 
 
-async def send_once(
-    channel,
-    reference,
-    retry=False,
-    **kwargs,
-):
-    # عند إعادة المحاولة نفحص آخر 200 رسالة
-    # لتقليل تكرار الإرسال بعد توقف مفاجئ.
-
+async def send_once(channel, reference, retry=False, **kwargs):
+    # فحص آخر 200 رسالة عند إعادة المحاولة
+    # لتقليل تكرار الرسائل بعد توقف مفاجئ.
     try:
         if retry:
             async for message in channel.history(limit=200):
@@ -1203,18 +997,12 @@ async def send_once(
                     continue
 
                 data = json.dumps(
-                    [
-                        component.to_dict()
-                        for component in message.components
-                    ],
+                    [c.to_dict() for c in message.components],
                     ensure_ascii=False,
                 )
 
                 data += json.dumps(
-                    [
-                        embed.to_dict()
-                        for embed in message.embeds
-                    ],
+                    [e.to_dict() for e in message.embeds],
                     ensure_ascii=False,
                 )
 
@@ -1242,33 +1030,25 @@ async def notify_owner(task):
             or await bot.fetch_user(task["user"])
         )
 
-        channel = (
-            user.dm_channel
-            or await user.create_dm()
-        )
-
+        channel = user.dm_channel or await user.create_dm()
         accepted = task["status"] == "accepted"
 
         description = (
             f"**رقم المهمة:** {task['id']}\n"
-            f"**القسم:** "
-            f"{TASK_CHANNELS[task['channel']]['name']}\n"
+            f"**القسم:** {TASK_CHANNELS[task['channel']]['name']}\n"
         )
 
         if accepted:
             description += (
                 f"**نقاط المهمة:** +{task['awarded']}\n"
-                f"**مجموع نقاطك وقت القبول:** "
-                f"{task['points_at_decision']}\n"
-                f"**مهامك المقبولة وقت القبول:** "
-                f"{task['accepted_at_decision']}\n\n"
+                f"**مجموع نقاطك وقت القبول:** {task['points_at_decision']}\n"
+                f"**مهامك المقبولة وقت القبول:** {task['accepted_at_decision']}\n\n"
                 "استخدم `/نقاط` لعرض مجموعك الحالي."
             )
         else:
             description += (
                 f"**سبب الرفض:** {clean(task['reason'])}\n"
-                f"**نقاطك وقت القرار:** "
-                f"{task['points_at_decision']}"
+                f"**نقاطك وقت القرار:** {task['points_at_decision']}"
             )
 
         description += (
@@ -1278,16 +1058,11 @@ async def notify_owner(task):
         )
 
         embed = discord.Embed(
-            title=(
-                "✅ تم قبول مهمتك"
-                if accepted
-                else "❌ تم رفض مهمتك"
-            ),
+            title="✅ تم قبول مهمتك" if accepted else "❌ تم رفض مهمتك",
             description=description,
             color=0x22C55E if accepted else 0xEF4444,
             timestamp=dt.datetime.fromtimestamp(
-                task["reviewed"],
-                dt.timezone.utc,
+                task["reviewed"], dt.timezone.utc
             ),
         )
 
@@ -1295,11 +1070,7 @@ async def notify_owner(task):
             text=f"{BOT_NAME} • {marker(task, 'dm')}"
         )
 
-        retry = task.get(
-            "dm_attempted",
-            False,
-        )
-
+        retry = task.get("dm_attempted", False)
         task["dm_attempted"] = True
         save(task)
 
@@ -1318,8 +1089,8 @@ async def notify_owner(task):
         save(task)
 
         print(
-            f"تعذر إرسال الخاص للمهمة {task['id']}: "
-            "الخاص غير متاح."
+            f"تعذر إرسال الخاص للمهمة {task['id']}: الخاص غير متاح.",
+            flush=True,
         )
 
     except Exception as error:
@@ -1327,7 +1098,7 @@ async def notify_owner(task):
 
 
 # ======================================================
-# لوحة الإحصائيات داخل روم اللوقات
+# لوحة الإحصائيات في روم اللوقات
 # ======================================================
 
 async def update_dashboard():
@@ -1344,27 +1115,18 @@ async def update_dashboard():
 
     message_id = setting("dashboard_id")
 
-    if (
-        message_id
-        and setting("dashboard_signature") == signature
-    ):
+    if message_id and setting("dashboard_signature") == signature:
         return
 
-    channel = await get_channel(
-        LOG_CHANNEL_ID
-    )
+    channel = await get_channel(LOG_CHANNEL_ID)
 
     if message_id:
         try:
-            message = await channel.fetch_message(
-                int(message_id)
-            )
-
+            message = await channel.fetch_message(int(message_id))
             await message.edit(
                 embed=stats_embed(),
                 view=StatsView(),
             )
-
         except discord.NotFound:
             message_id = None
 
@@ -1373,40 +1135,23 @@ async def update_dashboard():
             embed=stats_embed(),
             view=StatsView(),
         )
+        setting("dashboard_id", message.id)
 
-        setting(
-            "dashboard_id",
-            message.id,
-        )
-
-    setting(
-        "dashboard_signature",
-        signature,
-    )
+    setting("dashboard_signature", signature)
 
 
 # ======================================================
-# المهام المتعثرة وإعادة المحاولة
+# معالجة النشر والقرارات المتعثرة
 # ======================================================
 
 async def process_jobs():
     for task in all_tasks():
         try:
             if task["status"] == "publishing":
-                channel = await get_channel(
-                    task["channel"]
-                )
+                channel = await get_channel(task["channel"])
+                pending = dict(task, status="pending")
 
-                pending = dict(
-                    task,
-                    status="pending",
-                )
-
-                retry = task.get(
-                    "publish_attempted",
-                    False,
-                )
-
+                retry = task.get("publish_attempted", False)
                 task["publish_attempted"] = True
                 save(task)
 
@@ -1422,7 +1167,6 @@ async def process_jobs():
                     status="pending",
                     message=message.id,
                 )
-
                 save(task)
 
                 bot.add_view(
@@ -1437,13 +1181,8 @@ async def process_jobs():
 
             if not task.get("updated"):
                 try:
-                    channel = await get_channel(
-                        task["channel"]
-                    )
-
-                    message = await channel.fetch_message(
-                        task["message"]
-                    )
+                    channel = await get_channel(task["channel"])
+                    message = await channel.fetch_message(task["message"])
 
                     await message.edit(
                         view=task_view(task),
@@ -1461,15 +1200,9 @@ async def process_jobs():
                     error_log(error)
 
             if not task.get("log_message"):
-                channel = await get_channel(
-                    LOG_CHANNEL_ID
-                )
+                channel = await get_channel(LOG_CHANNEL_ID)
 
-                retry = task.get(
-                    "log_attempted",
-                    False,
-                )
-
+                retry = task.get("log_attempted", False)
                 task["log_attempted"] = True
                 save(task)
 
@@ -1513,22 +1246,15 @@ class TasksBot(commands.Bot):
 
         for task in all_tasks():
             if task["status"] in (
-                "draft",
-                "pending",
-                "accepted",
-                "rejected",
+                "draft", "pending", "accepted", "rejected"
             ):
-                self.add_view(
-                    task_view(task)
-                )
+                self.add_view(task_view(task))
 
         await self.tree.sync(
             guild=discord.Object(id=GUILD_ID)
         )
 
-        self.worker = asyncio.create_task(
-            self.worker_loop()
-        )
+        self.worker = asyncio.create_task(self.worker_loop())
 
     async def worker_loop(self):
         await self.wait_until_ready()
@@ -1555,12 +1281,11 @@ class TasksBot(commands.Bot):
 
 
 bot = TasksBot()
-
 SERVER = discord.Object(id=GUILD_ID)
 
 
 # ======================================================
-# /اضافة_صورة
+# الأوامر
 # ======================================================
 
 @bot.tree.command(
@@ -1585,9 +1310,7 @@ async def add_task(interaction: discord.Interaction):
         )
 
         if count >= 5:
-            raise ValueError(
-                "لديك 5 مسودات. أكملها أو ألغِها أولًا."
-            )
+            raise ValueError("لديك 5 مسودات. أكملها أو ألغِها أولًا.")
 
         task = {
             "id": uuid.uuid4().hex[:20],
@@ -1608,10 +1331,6 @@ async def add_task(interaction: discord.Interaction):
     except ValueError as error:
         await tell(interaction, str(error))
 
-
-# ======================================================
-# /نقاط — محصور في الرومين المحددين
-# ======================================================
 
 @bot.tree.command(
     name="نقاط",
@@ -1640,10 +1359,6 @@ async def my_points(interaction: discord.Interaction):
         await tell(interaction, str(error))
 
 
-# ======================================================
-# /لوقات — إحصائيات جميع الإداريين
-# ======================================================
-
 @bot.tree.command(
     name="لوقات",
     description="عرض إحصائيات جميع الإداريين للمراجعين",
@@ -1654,9 +1369,7 @@ async def logs_command(interaction: discord.Interaction):
         check_context(interaction)
 
         if not reviewer(interaction.user):
-            raise ValueError(
-                "هذا الأمر متاح للمراجعين فقط."
-            )
+            raise ValueError("هذا الأمر متاح للمراجعين فقط.")
 
         await interaction.response.send_message(
             embed=stats_embed(),
@@ -1671,7 +1384,6 @@ async def logs_command(interaction: discord.Interaction):
 @bot.tree.error
 async def command_error(interaction, error):
     error_log(error)
-
     await tell(
         interaction,
         "تعذر تنفيذ الأمر الآن. أعد المحاولة.",
@@ -1679,7 +1391,7 @@ async def command_error(interaction, error):
 
 
 # ======================================================
-# التحقق من صلاحيات الرومات
+# التحقق من الرومات والصلاحيات
 # ======================================================
 
 @bot.event
@@ -1691,14 +1403,9 @@ async def on_ready():
         guild = bot.get_guild(GUILD_ID)
 
         if guild is None:
-            raise ValueError(
-                "البوت غير موجود في السيرفر المحدد."
-            )
+            raise ValueError("البوت غير موجود في السيرفر المحدد.")
 
-        me = (
-            guild.me
-            or await guild.fetch_member(bot.user.id)
-        )
+        me = guild.me or await guild.fetch_member(bot.user.id)
 
         channel_ids = (
             set(TASK_CHANNELS)
@@ -1713,9 +1420,7 @@ async def on_ready():
                 not isinstance(channel, discord.TextChannel)
                 or channel.guild.id != GUILD_ID
             ):
-                raise ValueError(
-                    f"الروم غير صالح: {channel_id}"
-                )
+                raise ValueError(f"الروم غير صالح: {channel_id}")
 
             permissions = channel.permissions_for(me)
 
@@ -1737,8 +1442,7 @@ async def on_ready():
                 for name in required
             ):
                 raise ValueError(
-                    "صلاحيات البوت ناقصة في الروم: "
-                    f"{channel_id}"
+                    f"صلاحيات البوت ناقصة في الروم: {channel_id}"
                 )
 
         bot.initialized = True
@@ -1747,23 +1451,18 @@ async def on_ready():
             f"✅ {BOT_NAME} جاهز ومتصل بدسكورد: {bot.user}",
             flush=True,
         )
-
         print(
             "الأوامر: /اضافة_صورة — /نقاط — /لوقات",
             flush=True,
         )
 
     except Exception as error:
-        print(
-            f"فشل الإعداد: {error}",
-            flush=True,
-        )
-
+        print(f"فشل الإعداد: {error}", flush=True)
         await bot.close()
 
 
 # ======================================================
-# صفحة Flask للاستضافة
+# صفحة الاستضافة
 # ======================================================
 
 def keep_alive():
@@ -1778,9 +1477,7 @@ def keep_alive():
     def home():
         return {
             "service": BOT_NAME,
-            "discord_ready": (
-                bot.initialized and bot.is_ready()
-            ),
+            "discord_ready": bot.initialized and bot.is_ready(),
         }
 
     def run_web():
@@ -1791,10 +1488,7 @@ def keep_alive():
             use_reloader=False,
         )
 
-    Thread(
-        target=run_web,
-        daemon=True,
-    ).start()
+    Thread(target=run_web, daemon=True).start()
 
 
 # ======================================================
