@@ -24,6 +24,7 @@ TOKEN = os.getenv("MILAN_BOT_TOKEN", "").strip()
 
 # آيدي السيرفر يقرأ من Environment.
 GUILD_RAW = os.getenv("DISCORD_GUILD_ID", "").strip()
+VALUE: 1556038627170066463
 
 if not TOKEN:
     raise SystemExit(
